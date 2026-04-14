@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build/output artifacts
+output/
+*.log
+
+# Local input documents
+input/*.docx
+input/*.doc
+
+# Word temp files
+~$*.docx
+~$*.doc
+
+# Optional: generated CSV/TXT if they may appear outside output
+*.tmp
