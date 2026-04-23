@@ -15,6 +15,31 @@
 2. `python build_separate_keyword_indexes.py`
 3. `python insert_keyword_indexes_into_word.py`
 
+Текущее состояние `test4`:
+
+- входной файл заказчика: `input/test4.docx`
+- snapshot pipeline для `test4` собран
+- RU author draft from snapshot собран
+- RU TOC draft собран
+- keyword pipeline собран
+- финальный документ собирается
+- RU TOC author wrapping/layout доведён до приемлемого состояния
+- в финальной сборке восстановлены предметные указатели
+
+Порядок итоговых артефактов для `test4`:
+
+1. `output/test4_with_keyword_indexes.docx`
+2. `output/test4_final_with_toc_author.docx`
+
+Примечание по финальной сборке:
+
+- финальная вставка TOC/author в `insert_toc_and_author_into_word.py` использует `output/<run-tag>_with_keyword_indexes.docx` как source document, если такой файл уже существует для текущего `run-tag`
+- если такого tagged файла нет, используется явно переданный `--docx`
+
+Следующий приоритет:
+
+1. `EN author index`
+
 Архивные файлы сохранены без удаления:
 
 - `archive/build_keyword_index.py` - старая версия извлечения через перебор абзацев
