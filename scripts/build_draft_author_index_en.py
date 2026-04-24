@@ -1,21 +1,29 @@
 from __future__ import annotations
 
+import argparse
+import os
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 import re
 import sys
+import uuid
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 SRC_DIR = ROOT_DIR / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from wordkeywords.common import normalize_text, read_csv_rows, write_csv, write_text
+from wordkeywords.common import normalize_text, write_csv, write_text
+from scripts.debug_en_title_author_pairs import (
+    DOCX_PATH,
+    EnTitleAuthorPairRow,
+    build_rows as build_pair_rows,
+)
 
 
 OUTPUT_DIR = ROOT_DIR / "output"
-INPUT_DEBUG_CSV = OUTPUT_DIR / "author_block_en_debug.csv"
+SOURCE_WINDOWS_CSV = "author_windows_en_debug.csv"
 
 OUTPUT_INDEX_CSV = "draft_author_index_en.csv"
 OUTPUT_INDEX_TXT = "draft_author_index_en.txt"
@@ -23,14 +31,17 @@ OUTPUT_DEBUG_CSV = "draft_author_index_en_debug.csv"
 OUTPUT_DEBUG_TXT = "draft_author_index_en_debug.txt"
 
 LATIN_NAME = r"[A-Z][A-Za-z'-]+"
-INITIAL = r"[A-Z][a-z]{0,2}\."
+INITIAL_LETTER = r"(?:[A-Z]|[\u0410-\u042f\u0401\u0451])"
+INITIAL_TAIL = r"(?:[a-z]|[\u0430-\u044f\u0451]){0,2}"
+INITIAL = rf"{INITIAL_LETTER}{INITIAL_TAIL}\s*\."
 DOUBLE_INITIALS = rf"{INITIAL}\s*{INITIAL}"
+NAME_END = r"(?=[\W\d]|$)"
 
 BASE_NAME_PATTERNS: list[tuple[str, str]] = [
-    ("surname_double_initials", rf"\b{LATIN_NAME}\s+{DOUBLE_INITIALS}\b"),
-    ("initials_surname", rf"\b{DOUBLE_INITIALS}\s*{LATIN_NAME}\b"),
-    ("surname_single_initial", rf"\b{LATIN_NAME}\s+{INITIAL}\b"),
-    ("initial_surname", rf"\b{INITIAL}\s*{LATIN_NAME}\b"),
+    ("surname_double_initials", rf"\b{LATIN_NAME}\s+{DOUBLE_INITIALS}{NAME_END}"),
+    ("initials_surname", rf"\b{DOUBLE_INITIALS}\s*{LATIN_NAME}{NAME_END}"),
+    ("surname_single_initial", rf"\b{LATIN_NAME}\s+{INITIAL}{NAME_END}"),
+    ("initial_surname", rf"\b{INITIAL}\s*{LATIN_NAME}{NAME_END}"),
 ]
 
 NAME_EXTRACTION_PATTERNS = [
@@ -41,19 +52,79 @@ AFFILIATION_STRIP_PATTERNS = [
     re.compile(rf"({pattern})(?:\s*\d+(?:\s*,\s*\d+)*)")
     for _, pattern in BASE_NAME_PATTERNS
 ]
+CYRILLIC_HOMOGLYPH_MAP = str.maketrans({
+    "А": "A",
+    "В": "B",
+    "С": "C",
+    "Е": "E",
+    "К": "K",
+    "М": "M",
+    "Н": "H",
+    "О": "O",
+    "Р": "P",
+    "Т": "T",
+    "Х": "X",
+    "У": "Y",
+})
+TITLE_SERVICE_CUES = (
+    "student",
+    "graduate student",
+    "junior researcher",
+    "masters student",
+    "master's student",
+    "masters's student",
+)
 
 
 @dataclass
 class DraftEnAuthorRow:
     article_no: int
     article_page: int | None
-    chosen_source: str
-    chosen_title_source: str
+    method: str
     en_title_candidate: str
     raw_en_author_line_used: str
     normalized_en_author_line: str
     parsed_en_authors: list[str]
+    extraction_status: str
     status: str
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Build the draft EN author index directly from the source .docx."
+    )
+    parser.add_argument(
+        "--docx",
+        type=Path,
+        default=DOCX_PATH,
+        help="Path to source .docx. Defaults to input/test1.docx.",
+    )
+    parser.add_argument(
+        "--run-tag",
+        dest="run_tag",
+        default="",
+        help="Optional prefix for tagged input/output artifact names.",
+    )
+    return parser.parse_args()
+
+
+def resolve_output_path(base_name: str, run_tag: str) -> Path:
+    clean_run_tag = run_tag.strip()
+    file_name = f"{clean_run_tag}_{base_name}" if clean_run_tag else base_name
+    return OUTPUT_DIR / file_name
+
+
+def resolve_source_run_tag(run_tag: str, docx_path: Path) -> str:
+    clean_run_tag = run_tag.strip()
+    if clean_run_tag:
+        return clean_run_tag
+
+    inferred_run_tag = normalize_text(docx_path.stem)
+    if inferred_run_tag and resolve_output_path(SOURCE_WINDOWS_CSV, inferred_run_tag).exists():
+        print(f"[info] using source artifacts from run-tag '{inferred_run_tag}'")
+        return inferred_run_tag
+
+    return ""
 
 
 def split_nonempty_lines(text: str) -> list[str]:
@@ -64,9 +135,9 @@ def split_nonempty_lines(text: str) -> list[str]:
 
 
 def normalize_author_name(name: str) -> str:
-    normalized = normalize_text(name)
+    normalized = normalize_text(name).translate(CYRILLIC_HOMOGLYPH_MAP)
     normalized = re.sub(r"\s+", " ", normalized).strip(" ,;")
-    normalized = re.sub(r"\b([A-Z])\.\s*([A-Z][a-z]{0,2}\.)", r"\1.\2", normalized)
+    normalized = re.sub(rf"\b({INITIAL_LETTER})\.\s*({INITIAL_LETTER}{INITIAL_TAIL}\.)", r"\1.\2", normalized)
 
     initials_surname_match = re.fullmatch(rf"({DOUBLE_INITIALS})\s*({LATIN_NAME})", normalized)
     if initials_surname_match:
@@ -96,7 +167,7 @@ def normalize_author_name(name: str) -> str:
 
 
 def normalize_author_line(text: str) -> str:
-    normalized = normalize_text(text)
+    normalized = normalize_text(text).translate(CYRILLIC_HOMOGLYPH_MAP)
     if not normalized:
         return ""
 
@@ -105,7 +176,7 @@ def normalize_author_line(text: str) -> str:
     for pattern in AFFILIATION_STRIP_PATTERNS:
         normalized = pattern.sub(r"\1", normalized)
 
-    normalized = re.sub(r"(?<=[A-Za-z])(?=\d)", " ", normalized)
+    normalized = re.sub(r"(?<=[A-Za-z\u0410-\u042f\u0401\u0451\u0430-\u044f])(?=\d)", " ", normalized)
     normalized = re.sub(r"\b\d+(?:\s*,\s*\d+)*\b", "", normalized)
     normalized = re.sub(r"\s+,", ",", normalized)
     normalized = re.sub(r",\s*,+", ", ", normalized)
@@ -170,65 +241,103 @@ def extract_authors_from_block(text: str) -> list[str]:
     return result
 
 
-def choose_source(item: dict[str, str]) -> tuple[str, str, str, str]:
-    font14_status = normalize_text(item.get("font14_status", ""))
-    status = normalize_text(item.get("status", ""))
+def parse_author_name_parts(name: str) -> tuple[str, str, str | None] | None:
+    normalized = normalize_author_name(name)
+    double_match = re.fullmatch(rf"({LATIN_NAME})\s+({INITIAL})({INITIAL})", normalized)
+    if double_match:
+        return double_match.group(1), double_match.group(2), double_match.group(3)
 
-    if font14_status == "found_title_and_author":
-        return (
-            "font14",
-            "font14",
-            normalize_text(item.get("font14_en_title", "")),
-            normalize_text(item.get("font14_raw_en_author_line", "")),
-        )
+    single_match = re.fullmatch(rf"({LATIN_NAME})\s+({INITIAL})", normalized)
+    if single_match:
+        return single_match.group(1), single_match.group(2), None
 
-    if status == "found_title_and_author":
-        return (
-            "fallback",
-            "fallback",
-            normalize_text(item.get("en_title", "")),
-            normalize_text(item.get("raw_en_author_line", "")),
-        )
-
-    return (
-        "not_found",
-        "none",
-        normalize_text(item.get("font14_en_title", "")) or normalize_text(item.get("en_title", "")),
-        "",
-    )
+    return None
 
 
-def build_rows_from_debug_csv(path: Path) -> list[DraftEnAuthorRow]:
+def merge_single_initial_variants(rows: list[DraftEnAuthorRow]) -> None:
+    fuller_variants: dict[tuple[str, str], set[str]] = defaultdict(set)
+
+    for row in rows:
+        for author in row.parsed_en_authors:
+            parsed = parse_author_name_parts(author)
+            if parsed is None:
+                continue
+            surname, first_initial, second_initial = parsed
+            if second_initial:
+                fuller_variants[(surname.casefold(), first_initial.casefold())].add(
+                    normalize_author_name(author)
+                )
+
+    if not fuller_variants:
+        return
+
+    for row in rows:
+        merged_authors: list[str] = []
+        seen: set[str] = set()
+
+        for author in row.parsed_en_authors:
+            resolved_author = normalize_author_name(author)
+            parsed = parse_author_name_parts(resolved_author)
+            if parsed is not None:
+                surname, first_initial, second_initial = parsed
+                if second_initial is None:
+                    candidates = fuller_variants.get((surname.casefold(), first_initial.casefold()), set())
+                    if len(candidates) == 1:
+                        resolved_author = next(iter(candidates))
+
+            key = resolved_author.casefold()
+            if key not in seen:
+                seen.add(key)
+                merged_authors.append(resolved_author)
+
+        row.parsed_en_authors = merged_authors
+
+
+def looks_like_service_title(text: str) -> bool:
+    normalized = normalize_text(text).replace("’", "'").replace("*", "").strip(" ,;").casefold()
+    if not normalized:
+        return False
+    return any(cue in normalized for cue in TITLE_SERVICE_CUES)
+
+
+def build_rows_from_pair_rows(pair_rows: list[EnTitleAuthorPairRow]) -> list[DraftEnAuthorRow]:
     rows: list[DraftEnAuthorRow] = []
 
-    for item in read_csv_rows(path):
-        article_no_text = normalize_text(item.get("article_no", ""))
-        article_page_text = normalize_text(item.get("article_page", ""))
-        article_no = int(article_no_text) if article_no_text.isdigit() else 0
-        article_page = int(article_page_text) if article_page_text.isdigit() else None
-
-        chosen_source, chosen_title_source, en_title_candidate, raw_line = choose_source(item)
+    for item in pair_rows:
+        extraction_status = normalize_text(item.status)
+        method = normalize_text(item.source_used) or "not_found"
+        title_candidate = normalize_text(item.en_title_candidate)
+        raw_line = normalize_text(item.en_author_candidate)
+        if looks_like_service_title(title_candidate):
+            title_candidate = ""
+            if not raw_line:
+                method = "not_found"
+                extraction_status = "not_found"
         normalized_line = normalize_author_line(raw_line)
         parsed_authors = extract_authors_from_block(normalized_line)
-        status = "found" if parsed_authors else "not_found"
 
-        if chosen_source == "not_found" or not parsed_authors:
-            chosen_source = "not_found" if chosen_source == "not_found" else chosen_source
+        if parsed_authors:
+            status = "found"
+        elif raw_line:
+            status = "parse_failed"
+        else:
+            status = extraction_status or "not_found"
 
         rows.append(
             DraftEnAuthorRow(
-                article_no=article_no,
-                article_page=article_page,
-                chosen_source=chosen_source if parsed_authors or chosen_source == "not_found" else chosen_source,
-                chosen_title_source=chosen_title_source,
-                en_title_candidate=en_title_candidate,
+                article_no=item.article_no,
+                article_page=item.article_page,
+                method=method,
+                en_title_candidate=title_candidate,
                 raw_en_author_line_used=raw_line,
                 normalized_en_author_line=normalized_line,
                 parsed_en_authors=parsed_authors,
+                extraction_status=extraction_status,
                 status=status,
             )
         )
 
+    merge_single_initial_variants(rows)
     return rows
 
 
@@ -261,12 +370,12 @@ def write_debug_csv(path: Path, rows: list[DraftEnAuthorRow]) -> None:
         [
             row.article_no,
             row.article_page if row.article_page is not None else "",
-            row.chosen_source,
-            row.chosen_title_source,
             row.en_title_candidate,
             row.raw_en_author_line_used,
             row.normalized_en_author_line,
             " | ".join(row.parsed_en_authors),
+            row.method,
+            row.extraction_status,
             row.status,
         ]
         for row in rows
@@ -275,13 +384,13 @@ def write_debug_csv(path: Path, rows: list[DraftEnAuthorRow]) -> None:
         path,
         [
             "article_no",
-            "article_page",
-            "chosen_source",
-            "chosen_title_source",
-            "en_title_candidate",
-            "raw_en_author_line_used",
-            "normalized_en_author_line",
-            "parsed_en_authors",
+            "page",
+            "title",
+            "authors_raw",
+            "authors_normalized",
+            "parsed_authors",
+            "method",
+            "extraction_status",
             "status",
         ],
         csv_rows,
@@ -304,20 +413,20 @@ def build_debug_text(rows: list[DraftEnAuthorRow]) -> str:
                 [
                     "=" * 100,
                     f"ARTICLE {row.article_no} | page {page_text}",
-                    f"CHOSEN SOURCE: {row.chosen_source}",
-                    f"CHOSEN TITLE SOURCE: {row.chosen_title_source}",
+                    f"METHOD: {row.method}",
+                    f"EXTRACTION STATUS: {row.extraction_status or '?'}",
                     f"STATUS: {row.status}",
                     "",
-                    "EN TITLE CANDIDATE:",
+                    "TITLE:",
                     row.en_title_candidate or "<empty>",
                     "",
-                    "RAW EN AUTHOR LINE USED:",
+                    "AUTHORS RAW:",
                     row.raw_en_author_line_used or "<empty>",
                     "",
-                    "NORMALIZED EN AUTHOR LINE:",
+                    "AUTHORS NORMALIZED:",
                     row.normalized_en_author_line or "<empty>",
                     "",
-                    f"PARSED EN AUTHORS: {parsed_authors}",
+                    f"PARSED AUTHORS: {parsed_authors}",
                 ]
             )
         )
@@ -326,9 +435,9 @@ def build_debug_text(rows: list[DraftEnAuthorRow]) -> str:
 
 
 def print_summary(rows: list[DraftEnAuthorRow], index: dict[str, list[int]]) -> None:
-    font14_count = sum(1 for row in rows if row.chosen_source == "font14")
-    fallback_count = sum(1 for row in rows if row.chosen_source == "fallback")
-    not_found_count = sum(1 for row in rows if row.chosen_source == "not_found")
+    font14_count = sum(1 for row in rows if row.status == "found" and row.method == "font14")
+    fallback_count = sum(1 for row in rows if row.status == "found" and row.method != "font14")
+    not_found_count = sum(1 for row in rows if row.status != "found")
 
     print("=" * 100)
     print(f"EN ARTICLES PROCESSED:   {len(rows)}")
@@ -339,33 +448,99 @@ def print_summary(rows: list[DraftEnAuthorRow], index: dict[str, list[int]]) -> 
     print("=" * 100)
 
 
+def is_retryable_output_write_error(error: OSError) -> bool:
+    if isinstance(error, PermissionError):
+        return True
+    return getattr(error, "winerror", None) == 32
+
+
+def build_fallback_output_path(path: Path, suffix_no: int) -> Path:
+    return path.with_name(f"{path.stem}_{suffix_no}{path.suffix}")
+
+
+def build_temp_output_path(path: Path) -> Path:
+    return path.with_name(f"{path.name}.tmp.{os.getpid()}.{uuid.uuid4().hex}")
+
+
+def safe_write_with_replace(path: Path, writer) -> Path:
+    temp_path = build_temp_output_path(path)
+
+    try:
+        writer(temp_path)
+        os.replace(temp_path, path)
+        return path
+    except OSError as error:
+        try:
+            if temp_path.exists():
+                temp_path.unlink()
+        except OSError:
+            pass
+        if not is_retryable_output_write_error(error):
+            raise
+
+    for suffix_no in range(1, 1000):
+        fallback_path = build_fallback_output_path(path, suffix_no)
+        temp_fallback_path = build_temp_output_path(fallback_path)
+        try:
+            writer(temp_fallback_path)
+            os.replace(temp_fallback_path, fallback_path)
+            print(f"[save] primary path unavailable, saved fallback artifact: {fallback_path}")
+            return fallback_path
+        except OSError as error:
+            try:
+                if temp_fallback_path.exists():
+                    temp_fallback_path.unlink()
+            except OSError:
+                pass
+            if not is_retryable_output_write_error(error):
+                raise
+
+    raise RuntimeError(f"Could not save artifact with fallback names near: {path}")
+
+
 def main() -> None:
-    input_path = Path(INPUT_DEBUG_CSV)
-    if not input_path.exists():
-        raise FileNotFoundError(f"Файл не найден: {input_path}")
+    args = parse_args()
+    run_tag = args.run_tag.strip()
+    docx_path = Path(args.docx).resolve()
+    if not docx_path.exists():
+        raise FileNotFoundError(f"File not found: {docx_path}")
+    source_run_tag = resolve_source_run_tag(run_tag, docx_path)
 
     output_dir = Path(OUTPUT_DIR)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    rows = build_rows_from_debug_csv(input_path)
+    pair_rows = build_pair_rows(docx_path, source_run_tag)
+    rows = build_rows_from_pair_rows(pair_rows)
     index = build_author_index(rows)
 
-    index_csv_path = output_dir / OUTPUT_INDEX_CSV
-    index_txt_path = output_dir / OUTPUT_INDEX_TXT
-    debug_csv_path = output_dir / OUTPUT_DEBUG_CSV
-    debug_txt_path = output_dir / OUTPUT_DEBUG_TXT
+    index_csv_path = resolve_output_path(OUTPUT_INDEX_CSV, run_tag)
+    index_txt_path = resolve_output_path(OUTPUT_INDEX_TXT, run_tag)
+    debug_csv_path = resolve_output_path(OUTPUT_DEBUG_CSV, run_tag)
+    debug_txt_path = resolve_output_path(OUTPUT_DEBUG_TXT, run_tag)
 
-    write_index_csv(index_csv_path, index)
-    write_text(index_txt_path, build_index_text(index))
-    write_debug_csv(debug_csv_path, rows)
-    write_text(debug_txt_path, build_debug_text(rows))
+    saved_index_csv_path = safe_write_with_replace(
+        index_csv_path,
+        lambda output_path: write_index_csv(output_path, index),
+    )
+    saved_index_txt_path = safe_write_with_replace(
+        index_txt_path,
+        lambda output_path: write_text(output_path, build_index_text(index)),
+    )
+    saved_debug_csv_path = safe_write_with_replace(
+        debug_csv_path,
+        lambda output_path: write_debug_csv(output_path, rows),
+    )
+    saved_debug_txt_path = safe_write_with_replace(
+        debug_txt_path,
+        lambda output_path: write_text(output_path, build_debug_text(rows)),
+    )
     print_summary(rows, index)
 
-    print("\nФайлы сохранены:")
-    print(index_csv_path)
-    print(index_txt_path)
-    print(debug_csv_path)
-    print(debug_txt_path)
+    print("\nSaved files:")
+    print(saved_index_csv_path)
+    print(saved_index_txt_path)
+    print(saved_debug_csv_path)
+    print(saved_debug_txt_path)
 
 
 if __name__ == "__main__":
