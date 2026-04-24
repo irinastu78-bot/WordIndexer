@@ -1,5 +1,5 @@
 from __future__ import annotations
-
+import argparse
 from dataclasses import dataclass
 from pathlib import Path
 import re
@@ -29,14 +29,36 @@ OUTPUT_TXT = "author_block_en_debug.txt"
 KEYWORD_LABELS = ("keywords:", "key words:", "ketwords:")
 TITLE_FONT_SIZE = 14.0
 TITLE_FONT_TOLERANCE = 0.2
+AUTHOR_LIST_WORD_LIMIT = 24
 AFFILIATION_CUES = (
     "university",
     "institute",
     "department",
     "laboratory",
+    "lab",
     "academy",
     "faculty",
+    "centre",
+    "center",
+    "school",
     "college",
+    "hospital",
+    "museum",
+    "company",
+    "ltd",
+    "inc",
+    "llc",
+    "corporation",
+    "corp",
+    "research center",
+    "research centre",
+    "research institute",
+    "academy of",
+    "institute of",
+    "department of",
+    "faculty of",
+    "school of",
+    "college of",
     "russia",
     "moscow",
     "kazan",
@@ -46,18 +68,69 @@ AFFILIATION_CUES = (
     "email",
 )
 SERVICE_PREFIXES = ("abstract", "annotation", "summary", "doi", "udc")
+ADDRESS_LIKE_CUES = (
+    "street",
+    "st.",
+    "avenue",
+    "ave.",
+    "road",
+    "rd.",
+    "boulevard",
+    "blvd",
+    "building",
+    "room",
+    "office",
+    "postal",
+    "zip code",
+    "postbox",
+    "p.o. box",
+)
+REFERENCE_STYLE_CUES = (
+    "elsevier",
+    "springer",
+    "wiley",
+    "publisher",
+    "press",
+    "amsterdam",
+    "london",
+    "new york",
+    "vol.",
+    "no.",
+    " pp.",
+    " p.",
+    "//",
+)
+SERVICE_ROLE_CUES = (
+    "student",
+    "graduate student",
+    "junior researcher",
+    "postgraduate",
+    "undergraduate",
+    "phd student",
+)
+SHORT_INSTITUTION_FRAGMENTS = (
+    "m.v. lomonosov",
+    "a.v. topchiev",
+    "d.i. mendeleev",
+)
 
 LATIN_LETTER_RE = re.compile(r"[A-Za-z]")
 CYRILLIC_LETTER_RE = re.compile(r"[А-Яа-яЁё]")
 LATIN_WORD_RE = re.compile(r"[A-Za-z][A-Za-z'-]*")
 
 NAME_WORD = r"[A-Z][A-Za-z'-]+"
+INITIAL_LETTER = r"(?:[A-Z]|[\u0410-\u042f\u0401\u0451])"
+INITIAL_TAIL = r"(?:[a-z]|[\u0430-\u044f\u0451]){0,2}"
+INITIAL = rf"{INITIAL_LETTER}{INITIAL_TAIL}\s*\."
+DOUBLE_INITIALS = rf"{INITIAL}\s*{INITIAL}"
+NAME_END = r"(?=[\W\d]|$)"
 AUTHOR_PATTERNS = [
-    re.compile(rf"\b{NAME_WORD}\s+[A-Z]\.\s*[A-Z]\.?\b"),
-    re.compile(rf"\b[A-Z]\.\s*[A-Z]\.\s*{NAME_WORD}\b"),
-    re.compile(rf"\b{NAME_WORD}\s+{NAME_WORD}\b"),
+    re.compile(rf"\b{NAME_WORD}\s+{DOUBLE_INITIALS}{NAME_END}"),
+    re.compile(rf"\b{DOUBLE_INITIALS}\s*{NAME_WORD}{NAME_END}"),
+    re.compile(rf"\b{NAME_WORD}\s+{INITIAL}{NAME_END}"),
+    re.compile(rf"\b{INITIAL}\s*{NAME_WORD}{NAME_END}"),
 ]
-STRICT_AUTHOR_PATTERNS = AUTHOR_PATTERNS[:2]
+STRICT_AUTHOR_PATTERNS = AUTHOR_PATTERNS[:]
 
 
 @dataclass
@@ -76,6 +149,7 @@ class WindowLine:
     line_no: int
     text: str
     paragraph_first_char_font_size: float | None
+    paragraph_first_char_italic: bool | None
 
 
 @dataclass
@@ -100,6 +174,35 @@ class EnBlockDebugRow:
     font14_status: str
     source_used: str
     status: str
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Build EN author block debug CSV/TXT from EN article windows."
+    )
+    parser.add_argument(
+        "--docx",
+        type=Path,
+        default=DOCX_PATH,
+        help="Path to source .docx. Defaults to input/test1.docx.",
+    )
+    parser.add_argument(
+        "--run-tag",
+        dest="run_tag",
+        default="",
+        help="Optional prefix for tagged input/output artifact names.",
+    )
+    return parser.parse_args()
+
+
+def resolve_output_path(base_name: str, run_tag: str) -> Path:
+    clean_run_tag = run_tag.strip()
+    file_name = f"{clean_run_tag}_{base_name}" if clean_run_tag else base_name
+    return OUTPUT_DIR / file_name
+
+
+def resolve_input_windows_csv(run_tag: str) -> Path:
+    return resolve_output_path(INPUT_WINDOWS_CSV.name, run_tag) if run_tag.strip() else Path(INPUT_WINDOWS_CSV)
 
 
 def parse_int(value: str) -> int | None:
@@ -144,6 +247,7 @@ def build_window_lines(doc, start_index: int, end_exclusive: int) -> list[Window
             continue
 
         paragraph_first_char_font_size = get_first_char_font_size(paragraph_range)
+        paragraph_first_char_italic = get_first_char_italic(paragraph_range)
 
         for line_no, line in enumerate(split_nonempty_lines(text), start=1):
             lines.append(
@@ -152,6 +256,7 @@ def build_window_lines(doc, start_index: int, end_exclusive: int) -> list[Window
                     line_no=line_no,
                     text=line,
                     paragraph_first_char_font_size=paragraph_first_char_font_size,
+                    paragraph_first_char_italic=paragraph_first_char_italic,
                 )
             )
 
@@ -191,6 +296,36 @@ def get_first_char_font_size(paragraph_range) -> float | None:
     return None
 
 
+def get_first_char_italic(paragraph_range) -> bool | None:
+    try:
+        char_total = int(paragraph_range.Characters.Count)
+    except Exception:
+        return None
+
+    for char_no in range(1, char_total + 1):
+        try:
+            char_range = paragraph_range.Characters(char_no)
+            raw_char = char_range.Text
+        except Exception:
+            continue
+
+        char = raw_char.replace("\r", "").replace("\n", "").replace("\x07", "").replace("\t", " ")
+        if not char.strip():
+            continue
+
+        try:
+            italic_value = char_range.Font.Italic
+        except Exception:
+            return None
+
+        try:
+            return bool(int(italic_value))
+        except Exception:
+            return bool(italic_value)
+
+    return None
+
+
 def count_latin_letters(text: str) -> int:
     return sum(1 for char in text if char.isalpha() and char.isascii())
 
@@ -209,11 +344,86 @@ def is_service_line(text: str) -> bool:
     return any(normalized.startswith(prefix) for prefix in SERVICE_PREFIXES)
 
 
+def has_affiliation_cues(text: str) -> bool:
+    normalized = normalize_text(text)
+    lowered = normalized.casefold()
+    return any(cue in lowered for cue in AFFILIATION_CUES)
+
+
+def looks_like_explicit_affiliation_line(text: str) -> bool:
+    normalized = normalize_text(text)
+    if not normalized:
+        return False
+
+    words = LATIN_WORD_RE.findall(normalized)
+    strict_matches = find_strict_author_matches(normalized)
+    matches = find_author_matches(normalized)
+    lowered = normalized.casefold()
+    cue_hits = sum(1 for cue in AFFILIATION_CUES if cue in lowered)
+
+    if "@" in normalized or "http://" in lowered or "https://" in lowered or "doi" in lowered or "//" in normalized:
+        return True
+    if any(cue in lowered for cue in ADDRESS_LIKE_CUES):
+        return True
+    if cue_hits == 0:
+        return False
+    if len(strict_matches) >= 1 and len(words) <= 10:
+        return False
+    if len(matches) >= 2 and len(words) <= AUTHOR_LIST_WORD_LIMIT:
+        return False
+    if len(matches) == 1 and len(words) <= 8 and ("," in normalized or "*" in normalized or any(char.isdigit() for char in normalized)):
+        return False
+    if cue_hits >= 2:
+        return True
+    if len(words) >= 10 and ("," in normalized or any(char.isdigit() for char in normalized)):
+        return True
+    if len(words) >= 12 and len(matches) == 0:
+        return True
+    return False
+
+
+def looks_like_affiliation_line(text: str) -> bool:
+    normalized = normalize_text(text)
+    if not normalized:
+        return False
+
+    words = LATIN_WORD_RE.findall(normalized)
+    strict_matches = find_strict_author_matches(normalized)
+    matches = find_author_matches(normalized)
+    if looks_like_explicit_affiliation_line(normalized):
+        return True
+    if has_affiliation_cues(normalized):
+        if len(strict_matches) >= 1 and len(words) <= 10:
+            return False
+        if len(matches) >= 2 and len(words) <= AUTHOR_LIST_WORD_LIMIT:
+            return False
+        if len(matches) == 1 and len(words) <= 7 and ("," in normalized or "*" in normalized or any(char.isdigit() for char in normalized)):
+            return False
+        return True
+
+    if len(words) >= 7 and not strict_matches and len(matches) <= 1:
+        return True
+
+    if len(words) >= 9 and len(matches) <= 1 and "," in normalized:
+        return True
+
+    return False
+
+
 def is_latin_rich(text: str) -> bool:
     normalized = normalize_text(text)
     if not normalized:
         return False
     return count_latin_letters(normalized) >= 8 and count_cyrillic_letters(normalized) == 0 and bool(LATIN_LETTER_RE.search(normalized))
+
+
+def is_latin_rich_author_text(text: str) -> bool:
+    normalized = normalize_text(text)
+    if not normalized:
+        return False
+    if count_latin_letters(normalized) < 8 or not LATIN_LETTER_RE.search(normalized):
+        return False
+    return count_cyrillic_letters(normalized) == 0 or bool(find_author_matches(normalized))
 
 
 def find_author_matches(text: str) -> list[str]:
@@ -254,11 +464,38 @@ def find_strict_author_matches(text: str) -> list[str]:
     return result
 
 
+def find_author_match_spans(text: str) -> list[tuple[int, int]]:
+    normalized = normalize_text(text)
+    if not normalized:
+        return []
+
+    candidates: list[tuple[int, int, int]] = []
+
+    for priority, pattern in enumerate(AUTHOR_PATTERNS):
+        for match in pattern.finditer(normalized):
+            candidates.append((match.start(), match.end(), priority))
+
+    candidates.sort(key=lambda item: (item[0], -(item[1] - item[0]), item[2]))
+
+    selected: list[tuple[int, int]] = []
+    for start, end, _ in candidates:
+        if any(start < used_end and end > used_start for used_start, used_end in selected):
+            continue
+        selected.append((start, end))
+
+    selected.sort()
+    return selected
+
+
 def looks_like_author_line(text: str) -> bool:
     normalized = normalize_text(text)
-    if not is_latin_rich(normalized):
+    if not is_latin_rich_author_text(normalized):
         return False
     if is_keyword_line(normalized) or is_service_line(normalized):
+        return False
+    if looks_like_bibliography_reference_line(normalized):
+        return False
+    if looks_like_affiliation_line(normalized):
         return False
 
     words = LATIN_WORD_RE.findall(normalized)
@@ -280,8 +517,7 @@ def looks_like_title_line(text: str) -> bool:
     if is_keyword_line(normalized) or is_service_line(normalized) or looks_like_author_line(normalized):
         return False
 
-    lowered = normalized.casefold()
-    if any(cue in lowered for cue in AFFILIATION_CUES):
+    if looks_like_affiliation_line(normalized):
         return False
     if "@" in normalized:
         return False
@@ -295,6 +531,63 @@ def looks_like_title_line(text: str) -> bool:
     return True
 
 
+def looks_like_bibliography_reference_line(text: str) -> bool:
+    normalized = normalize_text(text)
+    if not normalized:
+        return False
+
+    words = LATIN_WORD_RE.findall(normalized)
+    if len(words) < 5:
+        return False
+
+    lowered = normalized.casefold()
+    has_leading_number = re.match(r"^\d+\.\s+", normalized) is not None
+    has_reference_author_head = (
+        re.match(rf"^\d+\.\s+{NAME_WORD}\s+{DOUBLE_INITIALS}", normalized) is not None
+        or re.match(rf"^\d+\.\s+{NAME_WORD}\s+{INITIAL}", normalized) is not None
+    )
+    has_year = re.search(r"\b(?:19|20)\d{2}\b", normalized) is not None
+    has_reference_cues = any(cue in lowered for cue in REFERENCE_STYLE_CUES)
+
+    return has_leading_number and has_reference_author_head and (has_year or has_reference_cues)
+
+
+def looks_like_backward_scan_noise(text: str) -> bool:
+    normalized = normalize_text(text)
+    if not normalized:
+        return False
+
+    lowered = normalized.casefold()
+    words = LATIN_WORD_RE.findall(normalized)
+    matches = find_author_matches(normalized)
+    strict_matches = find_strict_author_matches(normalized)
+    compact = normalized.replace(" ", "")
+    token_parts = re.findall(r"[A-Za-z0-9]+", normalized)
+
+    if looks_like_bibliography_reference_line(normalized):
+        return True
+    if looks_like_affiliation_line(normalized):
+        return True
+    if "student" in lowered and ("year" in lowered or "specialist" in lowered or "program" in lowered):
+        return True
+    if re.fullmatch(r"(?:[A-Z][a-z]?(?:\s*,\s*|$)){4,}", normalized):
+        return True
+
+    if len(matches) == 0 and len(strict_matches) == 0:
+        if re.fullmatch(r"[A-Za-z0-9()/+\-.,*]+", compact) and sum(1 for char in compact if char.isdigit()) >= 2:
+            return True
+        if any(char.isdigit() for char in normalized) and any(char in normalized for char in "/()=+-") and len(words) <= 8:
+            return True
+        if 1 <= len(token_parts) <= 6:
+            noisy_tokens = sum(
+                1 for part in token_parts if any(char.isdigit() for char in part) or part.isupper()
+            )
+            if noisy_tokens >= max(1, len(token_parts) - 1):
+                return True
+
+    return False
+
+
 def has_title_font_size(line: WindowLine) -> bool:
     if line.paragraph_first_char_font_size is None:
         return False
@@ -305,25 +598,188 @@ def looks_like_post_title_author_line(text: str) -> bool:
     normalized = normalize_text(text)
     if not normalized:
         return False
-    if not is_latin_rich(normalized):
+    if not is_latin_rich_author_text(normalized):
         return False
     if is_keyword_line(normalized) or is_service_line(normalized):
         return False
 
-    lowered = normalized.casefold()
-    if any(cue in lowered for cue in AFFILIATION_CUES):
+    if looks_like_bibliography_reference_line(normalized):
         return False
-    if "@" in normalized or "http://" in lowered or "https://" in lowered or "doi" in lowered or "//" in normalized:
+    if looks_like_explicit_affiliation_line(normalized):
         return False
     if re.match(r"^\d+\.", normalized):
         return False
 
+    words = LATIN_WORD_RE.findall(normalized)
+    strict_matches = find_strict_author_matches(normalized)
     matches = find_author_matches(normalized)
     if len(matches) >= 2:
         return True
-    if len(matches) == 1 and ("," in normalized or "*" in normalized or any(char.isdigit() for char in normalized)):
+    if len(strict_matches) >= 1 and len(words) <= 10:
+        return True
+    if len(matches) == 1 and (
+        "," in normalized
+        or "*" in normalized
+        or any(char.isdigit() for char in normalized)
+        or len(words) <= 8
+    ):
         return True
     return False
+
+
+def has_structural_author_font_signal(line: WindowLine, title_line: WindowLine) -> bool:
+    if line.paragraph_index == title_line.paragraph_index:
+        return True
+    if line.paragraph_first_char_font_size is None or title_line.paragraph_first_char_font_size is None:
+        return False
+    return line.paragraph_first_char_font_size < title_line.paragraph_first_char_font_size - TITLE_FONT_TOLERANCE
+
+
+def has_non_italic_author_style_signal(line: WindowLine, title_line: WindowLine) -> bool:
+    if line.paragraph_index == title_line.paragraph_index:
+        return True
+    if line.paragraph_first_char_italic is None:
+        return True
+    return not line.paragraph_first_char_italic
+
+
+def has_author_like_fragments(text: str) -> bool:
+    normalized = normalize_text(text)
+    if not normalized:
+        return False
+
+    words = LATIN_WORD_RE.findall(normalized)
+    matches = find_author_matches(normalized)
+    strict_matches = find_strict_author_matches(normalized)
+
+    if len(matches) >= 1 or len(strict_matches) >= 1:
+        return True
+    if re.search(rf"\b{INITIAL}", normalized):
+        return True
+    if len(words) <= 8 and ("," in normalized or "*" in normalized or any(char.isdigit() for char in normalized)):
+        return True
+    return False
+
+
+def looks_like_structural_post_title_author_start(line: WindowLine, title_line: WindowLine) -> bool:
+    normalized = normalize_text(line.text)
+    if not normalized:
+        return False
+    if is_keyword_line(normalized) or is_service_line(normalized):
+        return False
+    if not is_latin_rich_author_text(normalized):
+        return False
+    if re.match(r"^\d+\.", normalized):
+        return False
+    if not has_author_like_fragments(normalized):
+        return False
+
+    words = LATIN_WORD_RE.findall(normalized)
+    if line.paragraph_index == title_line.paragraph_index:
+        if looks_like_explicit_affiliation_line(normalized):
+            return False
+        if looks_like_post_title_author_line(normalized):
+            return True
+        return len(words) <= 14
+    if line.paragraph_index > title_line.paragraph_index:
+        if not has_non_italic_author_style_signal(line, title_line):
+            return False
+        if looks_like_explicit_affiliation_line(normalized):
+            return False
+        if looks_like_post_title_author_line(normalized):
+            return True
+        if has_structural_author_font_signal(line, title_line):
+            return len(words) <= 14
+        return len(words) <= 10
+    return False
+
+
+def looks_like_author_list_continuation(text: str, previous_text: str = "") -> bool:
+    normalized = normalize_text(text)
+    previous_normalized = normalize_text(previous_text)
+    if not normalized:
+        return False
+    if not is_latin_rich_author_text(normalized):
+        return False
+    if is_keyword_line(normalized) or is_service_line(normalized):
+        return False
+    if looks_like_affiliation_line(normalized):
+        return False
+
+    words = LATIN_WORD_RE.findall(normalized)
+    strict_matches = find_strict_author_matches(normalized)
+    matches = find_author_matches(normalized)
+
+    if len(matches) >= 2:
+        return True
+    if len(strict_matches) >= 1 and len(words) <= 8:
+        return True
+    if len(matches) == 1 and len(words) <= 8:
+        return True
+    if previous_normalized.endswith((",", ";")) and len(words) <= 2:
+        if re.fullmatch(rf"{NAME_WORD}(?:\s+{NAME_WORD})?", normalized):
+            return True
+    if has_author_like_fragments(normalized) and len(words) <= 8 and not looks_like_affiliation_line(normalized):
+        return True
+    return False
+
+
+def looks_like_service_or_affiliation_only_author_candidate(text: str) -> bool:
+    normalized = normalize_text(text)
+    if not normalized:
+        return True
+
+    lowered = normalized.casefold()
+    compact_lowered = lowered.strip(" ,;*")
+    matches = find_author_matches(normalized)
+    strict_matches = find_strict_author_matches(normalized)
+
+    if is_keyword_line(normalized) or is_service_line(normalized):
+        return True
+    if looks_like_bibliography_reference_line(normalized):
+        return True
+    if compact_lowered in SHORT_INSTITUTION_FRAGMENTS:
+        return True
+    if "@" in normalized or "http://" in lowered or "https://" in lowered or "//" in normalized:
+        return True
+    if any(cue in lowered for cue in ADDRESS_LIKE_CUES):
+        return True
+    if looks_like_explicit_affiliation_line(normalized) or looks_like_affiliation_line(normalized):
+        return True
+    if any(cue in lowered for cue in SERVICE_ROLE_CUES) and len(matches) <= 1 and len(strict_matches) <= 1:
+        return True
+    return False
+
+
+def has_real_author_candidate(text: str) -> bool:
+    normalized = normalize_text(text)
+    if not normalized:
+        return False
+    if looks_like_service_or_affiliation_only_author_candidate(normalized):
+        return False
+    return looks_like_author_line(normalized) or looks_like_post_title_author_line(normalized)
+
+
+def finalize_title_author_candidates(
+    title_line: WindowLine | None,
+    author_line: WindowLine | None,
+) -> tuple[WindowLine | None, WindowLine | None]:
+    split_author_line: WindowLine | None = None
+
+    if title_line is not None:
+        split_title_line, split_author_line = split_combined_title_author_line(title_line)
+        if split_author_line is not None:
+            title_line = split_title_line
+
+    if author_line is not None:
+        author_line = trim_author_line_tail(author_line)
+        if not has_real_author_candidate(author_line.text):
+            author_line = None
+
+    if author_line is None and split_author_line is not None and has_real_author_candidate(split_author_line.text):
+        author_line = split_author_line
+
+    return title_line, author_line
 
 
 def choose_from_keyword_window(lines: list[WindowLine]) -> tuple[WindowLine | None, WindowLine | None, WindowLine | None]:
@@ -334,14 +790,14 @@ def choose_from_keyword_window(lines: list[WindowLine]) -> tuple[WindowLine | No
             keyword_line = line
             break
 
-    if keyword_line is None:
-        return None, None, None
-
-    keyword_index = lines.index(keyword_line)
+    keyword_index = lines.index(keyword_line) if keyword_line is not None else len(lines)
+    structural_title_line, structural_author_line = choose_structural_en_block(lines, keyword_index)
+    if structural_title_line is not None and structural_author_line is not None:
+        return keyword_line, structural_title_line, structural_author_line
 
     author_line: WindowLine | None = None
     for line in reversed(lines[:keyword_index]):
-        if looks_like_author_line(line.text):
+        if looks_like_author_line(line.text) and not looks_like_backward_scan_noise(line.text):
             author_line = line
             break
 
@@ -349,15 +805,33 @@ def choose_from_keyword_window(lines: list[WindowLine]) -> tuple[WindowLine | No
 
     title_line: WindowLine | None = None
     for line in reversed(lines[:title_anchor]):
-        if looks_like_title_line(line.text):
+        if looks_like_title_line(line.text) and not looks_like_backward_scan_noise(line.text):
             title_line = line
             break
+
+    if title_line is None or author_line is None:
+        fallback_title_line, fallback_author_line = choose_by_keyword_proximity(lines, keyword_index)
+        if fallback_author_line is not None:
+            author_line = fallback_author_line
+            if fallback_title_line is not None:
+                title_line = fallback_title_line
+
+    if title_line is None and structural_title_line is not None:
+        title_line = structural_title_line
+    if author_line is None and structural_author_line is not None:
+        author_line = structural_author_line
+
+    title_line, author_line = finalize_title_author_candidates(title_line, author_line)
 
     return keyword_line, title_line, author_line
 
 
 def choose_by_forward_scan(lines: list[WindowLine]) -> tuple[WindowLine | None, WindowLine | None]:
-    title_line: WindowLine | None = None
+    structural_title_line, structural_author_line = choose_structural_en_block(lines, len(lines))
+    if structural_title_line is not None and structural_author_line is not None:
+        return structural_title_line, structural_author_line
+
+    title_line: WindowLine | None = structural_title_line
 
     for line in lines:
         if looks_like_title_line(line.text):
@@ -377,7 +851,435 @@ def choose_by_forward_scan(lines: list[WindowLine]) -> tuple[WindowLine | None, 
         if is_keyword_line(line.text):
             break
 
+    if author_line is None and structural_author_line is not None:
+        author_line = structural_author_line
+
+    return finalize_title_author_candidates(title_line, author_line)
+
+
+def make_window_line(base_line: WindowLine, text: str) -> WindowLine:
+    return WindowLine(
+        paragraph_index=base_line.paragraph_index,
+        line_no=base_line.line_no,
+        text=normalize_text(text),
+        paragraph_first_char_font_size=base_line.paragraph_first_char_font_size,
+        paragraph_first_char_italic=base_line.paragraph_first_char_italic,
+    )
+
+
+def join_window_line_texts(lines: list[WindowLine]) -> str:
+    return normalize_text(" ".join(normalize_text(line.text) for line in lines if normalize_text(line.text)))
+
+
+def find_window_line_index(lines: list[WindowLine], target_line: WindowLine) -> int | None:
+    for index, line in enumerate(lines):
+        if line.paragraph_index == target_line.paragraph_index and line.line_no == target_line.line_no:
+            return index
+    return None
+
+
+def split_combined_title_author_line(line: WindowLine) -> tuple[WindowLine, WindowLine | None]:
+    normalized = normalize_text(line.text)
+    if not normalized:
+        return line, None
+
+    candidates: list[tuple[int, str, str]] = []
+
+    for pattern in AUTHOR_PATTERNS:
+        for match in pattern.finditer(normalized):
+            start = match.start()
+            if start < int(len(normalized) * 0.35):
+                continue
+
+            title_part = normalize_text(normalized[:start]).strip(" ,;")
+            author_part = normalize_text(normalized[start:]).strip(" ,;")
+            title_words = LATIN_WORD_RE.findall(title_part)
+            author_words = LATIN_WORD_RE.findall(author_part)
+
+            if len(title_words) < 4 or len(author_words) == 0 or len(author_words) > AUTHOR_LIST_WORD_LIMIT:
+                continue
+            if not looks_like_split_title_part(title_part, line):
+                continue
+            if not looks_like_post_title_author_line(author_part):
+                continue
+
+            candidates.append((start, title_part, author_part))
+
+    if not candidates:
+        return line, None
+
+    _, title_part, author_part = min(candidates, key=lambda item: item[0])
+    return make_window_line(line, title_part), trim_author_line_tail(make_window_line(line, author_part))
+
+
+def looks_like_split_title_part(text: str, source_line: WindowLine) -> bool:
+    normalized = normalize_text(text)
+    if looks_like_title_line(normalized):
+        return True
+    if not has_title_font_size(source_line):
+        return False
+    if not is_latin_rich(normalized):
+        return False
+    if is_keyword_line(normalized) or is_service_line(normalized):
+        return False
+    if "@" in normalized:
+        return False
+
+    words = LATIN_WORD_RE.findall(normalized)
+    if len(words) < 4 or len(words) > 30:
+        return False
+    if normalized.endswith("."):
+        return False
+    return True
+
+
+def trim_author_line_tail(line: WindowLine) -> WindowLine:
+    normalized = normalize_text(line.text)
+    if not normalized:
+        return line
+
+    spans = find_author_match_spans(normalized)
+    if not spans:
+        return line
+
+    last_end = spans[0][1]
+    for next_start, next_end in spans[1:]:
+        gap_text = normalize_text(normalized[last_end:next_start])
+        lowered_gap = gap_text.casefold()
+        if gap_text and (
+            "student" in lowered_gap
+            or any(cue in lowered_gap for cue in AFFILIATION_CUES)
+            or any(cue in lowered_gap for cue in ADDRESS_LIKE_CUES)
+            or "@" in gap_text
+            or "http://" in lowered_gap
+            or "https://" in lowered_gap
+            or "//" in gap_text
+            or is_service_line(gap_text)
+        ):
+            break
+        last_end = next_end
+
+    trim_probe = last_end
+    while trim_probe < len(normalized) and normalized[trim_probe] in " ,;*0123456789":
+        trim_probe += 1
+
+    tail = normalize_text(normalized[trim_probe:])
+    if not tail:
+        return make_window_line(line, normalized[:trim_probe].rstrip(" ,;"))
+
+    lowered_tail = tail.casefold()
+    if (
+        "student" in lowered_tail
+        or any(cue in lowered_tail for cue in AFFILIATION_CUES)
+        or any(cue in lowered_tail for cue in ADDRESS_LIKE_CUES)
+        or "@" in tail
+        or "http://" in lowered_tail
+        or "https://" in lowered_tail
+        or "//" in tail
+        or is_service_line(tail)
+    ):
+        return make_window_line(line, normalized[:trim_probe].rstrip(" ,;"))
+
+    return line
+
+
+def choose_by_keyword_proximity(lines: list[WindowLine], keyword_index: int) -> tuple[WindowLine | None, WindowLine | None]:
+    paragraph_blocks: list[WindowLine] = []
+    current_index = keyword_index - 1
+
+    while current_index >= 0:
+        paragraph_index = lines[current_index].paragraph_index
+        paragraph_end = current_index + 1
+
+        while current_index >= 0 and lines[current_index].paragraph_index == paragraph_index:
+            current_index -= 1
+
+        paragraph_start = current_index + 1
+        paragraph_blocks.append(
+            make_window_line(lines[paragraph_start], join_window_line_texts(lines[paragraph_start:paragraph_end]))
+        )
+
+    author_line: WindowLine | None = None
+    title_line: WindowLine | None = None
+    author_block_no: int | None = None
+
+    for block_no, paragraph_line in enumerate(paragraph_blocks):
+        normalized = normalize_text(paragraph_line.text)
+        if not normalized:
+            continue
+        if is_keyword_line(normalized) or is_service_line(normalized):
+            continue
+        if looks_like_explicit_affiliation_line(normalized) or looks_like_backward_scan_noise(normalized):
+            continue
+
+        split_title_line, split_author_line = split_combined_title_author_line(paragraph_line)
+        if split_author_line is not None:
+            return split_title_line, split_author_line
+
+        words = LATIN_WORD_RE.findall(normalized)
+        if looks_like_author_line(normalized) or looks_like_post_title_author_line(normalized):
+            author_line = trim_author_line_tail(paragraph_line)
+            author_block_no = block_no
+            break
+        if has_author_like_fragments(normalized) and len(words) <= 14:
+            author_line = trim_author_line_tail(paragraph_line)
+            author_block_no = block_no
+            break
+
+    if author_line is None or author_block_no is None:
+        return None, None
+
+    for paragraph_line in paragraph_blocks[author_block_no + 1 :]:
+        normalized = normalize_text(paragraph_line.text)
+        if not normalized:
+            continue
+        if is_keyword_line(normalized) or is_service_line(normalized):
+            continue
+        if looks_like_explicit_affiliation_line(normalized) or looks_like_backward_scan_noise(normalized):
+            continue
+
+        words = LATIN_WORD_RE.findall(normalized)
+        if looks_like_title_line(normalized):
+            title_line = paragraph_line
+            break
+        if is_latin_rich(normalized) and not has_author_like_fragments(normalized) and 4 <= len(words) <= 30:
+            if not normalized.endswith("."):
+                title_line = paragraph_line
+                break
+
     return title_line, author_line
+
+
+def has_recent_cyrillic_context(lines: list[WindowLine], line_index: int) -> bool:
+    start_index = max(0, line_index - 40)
+
+    for candidate in reversed(lines[start_index:line_index]):
+        normalized = normalize_text(candidate.text)
+        if not normalized:
+            continue
+        if count_cyrillic_letters(normalized) >= 6:
+            return True
+
+    return False
+
+
+def has_strong_title_before_author_pattern(lines: list[WindowLine], line_index: int) -> bool:
+    line = lines[line_index]
+    normalized = normalize_text(line.text)
+    if not normalized:
+        return False
+    if line.paragraph_first_char_italic is True:
+        return False
+    if not is_latin_rich(normalized):
+        return False
+    if not has_title_font_size(line):
+        return False
+    if is_keyword_line(normalized) or is_service_line(normalized):
+        return False
+    if looks_like_author_line(normalized) or looks_like_post_title_author_line(normalized):
+        return False
+    if line_index + 1 >= len(lines):
+        return False
+    return looks_like_structural_post_title_author_start(lines[line_index + 1], line)
+
+
+def should_reject_structural_title_as_affiliation(
+    lines: list[WindowLine],
+    line_index: int,
+) -> bool:
+    line = lines[line_index]
+    normalized = normalize_text(line.text)
+    if not normalized:
+        return False
+    if has_strong_title_before_author_pattern(lines, line_index):
+        return False
+    if looks_like_explicit_affiliation_line(normalized):
+        return True
+    if not looks_like_affiliation_line(normalized):
+        return False
+    if has_affiliation_cues(normalized):
+        return True
+    if has_author_like_fragments(normalized):
+        return True
+    return False
+
+
+def looks_like_structural_en_title_candidate(lines: list[WindowLine], line_index: int) -> bool:
+    line = lines[line_index]
+    normalized = normalize_text(line.text)
+    if not normalized:
+        return False
+    if line.paragraph_first_char_italic is True:
+        return False
+    if not is_latin_rich(normalized):
+        return False
+    if is_keyword_line(normalized) or is_service_line(normalized):
+        return False
+    if has_strong_title_before_author_pattern(lines, line_index):
+        return True
+    if should_reject_structural_title_as_affiliation(lines, line_index):
+        return False
+    if looks_like_author_line(normalized) or looks_like_post_title_author_line(normalized):
+        return False
+
+    words = LATIN_WORD_RE.findall(normalized)
+    if len(words) < 4 or len(words) > 24:
+        return False
+    if has_author_like_fragments(normalized) and len(words) <= 12:
+        return False
+
+    return has_title_font_size(line) or looks_like_title_line(normalized)
+
+
+def expand_title_line(lines: list[WindowLine], title_index: int) -> WindowLine:
+    base_line = lines[title_index]
+    start_index = title_index
+    end_index = title_index
+
+    while start_index > 0:
+        candidate = lines[start_index - 1]
+        if candidate.paragraph_index != base_line.paragraph_index:
+            break
+        if looks_like_author_line(candidate.text) or looks_like_post_title_author_line(candidate.text):
+            break
+        if not is_latin_rich(candidate.text) or is_keyword_line(candidate.text) or is_service_line(candidate.text):
+            break
+        start_index -= 1
+
+    while end_index + 1 < len(lines):
+        candidate = lines[end_index + 1]
+        if candidate.paragraph_index != base_line.paragraph_index:
+            break
+        if candidate.paragraph_first_char_italic is True:
+            break
+        if is_keyword_line(candidate.text) or is_service_line(candidate.text):
+            break
+        if looks_like_author_line(candidate.text) or looks_like_post_title_author_line(candidate.text):
+            break
+        if should_reject_structural_title_as_affiliation(lines, end_index + 1):
+            break
+        if not is_latin_rich(candidate.text):
+            break
+        if not has_title_font_size(candidate) and not looks_like_title_line(candidate.text):
+            break
+        end_index += 1
+
+    return make_window_line(base_line, join_window_line_texts(lines[start_index : end_index + 1]))
+
+
+def choose_structural_en_block(
+    lines: list[WindowLine],
+    keyword_index: int,
+) -> tuple[WindowLine | None, WindowLine | None]:
+    title_only_line: WindowLine | None = None
+
+    for title_index in range(keyword_index):
+        candidate = lines[title_index]
+        if not looks_like_structural_en_title_candidate(lines, title_index):
+            continue
+        if not has_recent_cyrillic_context(lines, title_index):
+            continue
+
+        expanded_title_line = expand_title_line(lines, title_index)
+        author_line = collect_same_paragraph_author_line(lines, title_index)
+
+        if author_line is None:
+            author_line = collect_following_paragraph_author_line(lines, title_index, keyword_index)
+
+        if author_line is None:
+            expanded_title_line, author_line = split_combined_title_author_line(expanded_title_line)
+
+        expanded_title_line, author_line = finalize_title_author_candidates(expanded_title_line, author_line)
+
+        if title_only_line is None and expanded_title_line is not None:
+            title_only_line = expanded_title_line
+        if expanded_title_line is not None and author_line is not None:
+            return expanded_title_line, author_line
+
+    return title_only_line, None
+
+
+def collect_same_paragraph_author_line(lines: list[WindowLine], title_index: int) -> WindowLine | None:
+    title_line = lines[title_index]
+    author_start_index: int | None = None
+
+    for index in range(title_index + 1, len(lines)):
+        candidate = lines[index]
+        if candidate.paragraph_index != title_line.paragraph_index:
+            break
+        if looks_like_structural_post_title_author_start(candidate, title_line):
+            author_start_index = index
+            break
+
+    if author_start_index is None:
+        return None
+
+    author_end_index = author_start_index
+    for index in range(author_start_index + 1, len(lines)):
+        candidate = lines[index]
+        if candidate.paragraph_index != title_line.paragraph_index:
+            break
+        if is_service_line(candidate.text) or is_keyword_line(candidate.text):
+            break
+        if not looks_like_author_list_continuation(candidate.text, lines[author_end_index].text):
+            break
+        author_end_index = index
+
+    return trim_author_line_tail(
+        make_window_line(
+            lines[author_start_index],
+            join_window_line_texts(lines[author_start_index : author_end_index + 1]),
+        )
+    )
+
+
+def collect_following_paragraph_author_line(
+    lines: list[WindowLine],
+    title_index: int,
+    keyword_index: int,
+) -> WindowLine | None:
+    title_line = lines[title_index]
+    current_index = title_index + 1
+
+    while current_index < keyword_index and lines[current_index].paragraph_index == title_line.paragraph_index:
+        current_index += 1
+
+    if current_index >= keyword_index:
+        return None
+
+    paragraph_index = lines[current_index].paragraph_index
+    paragraph_lines: list[WindowLine] = []
+    while current_index < keyword_index and lines[current_index].paragraph_index == paragraph_index:
+        paragraph_lines.append(lines[current_index])
+        current_index += 1
+
+    paragraph_text = join_window_line_texts(paragraph_lines)
+    if not paragraph_text or is_keyword_line(paragraph_text):
+        return None
+    if is_service_line(paragraph_text):
+        return None
+
+    author_start_index: int | None = None
+    for index, line in enumerate(paragraph_lines):
+        if looks_like_structural_post_title_author_start(line, title_line):
+            author_start_index = index
+            break
+
+    if author_start_index is None:
+        return None
+
+    author_end_index = author_start_index
+    for index in range(author_start_index + 1, len(paragraph_lines)):
+        if not looks_like_author_list_continuation(paragraph_lines[index].text, paragraph_lines[author_end_index].text):
+            break
+        author_end_index = index
+
+    return trim_author_line_tail(
+        make_window_line(
+            paragraph_lines[author_start_index],
+            join_window_line_texts(paragraph_lines[author_start_index : author_end_index + 1]),
+        )
+    )
 
 
 def choose_by_keyword_and_font14(
@@ -390,11 +1292,13 @@ def choose_by_keyword_and_font14(
             keyword_line = line
             break
 
-    if keyword_line is None:
-        return None, None, None
+    keyword_index = lines.index(keyword_line) if keyword_line is not None else len(lines)
 
-    keyword_index = lines.index(keyword_line)
-    title_line: WindowLine | None = None
+    structural_title_line, structural_author_line = choose_structural_en_block(lines, keyword_index)
+    if structural_title_line is not None and structural_author_line is not None:
+        return keyword_line, structural_title_line, structural_author_line
+
+    title_line = structural_title_line
 
     for line in reversed(lines[:keyword_index]):
         if has_title_font_size(line) and looks_like_title_line(line.text):
@@ -402,28 +1306,29 @@ def choose_by_keyword_and_font14(
             break
 
     if title_line is None:
-        return keyword_line, None, None
+        return keyword_line, structural_title_line, structural_author_line
 
-    title_index = lines.index(title_line)
-    author_line: WindowLine | None = None
+    title_index = find_window_line_index(lines, title_line)
+    if title_index is None:
+        return keyword_line, structural_title_line, structural_author_line
 
-    if title_index + 1 < len(lines):
-        candidate = lines[title_index + 1]
-        if candidate.paragraph_index == title_line.paragraph_index and looks_like_post_title_author_line(candidate.text):
-            author_line = candidate
+    expanded_title_line = expand_title_line(lines, title_index)
+    author_line = collect_same_paragraph_author_line(lines, title_index)
 
     if author_line is None:
-        next_paragraph_index = title_line.paragraph_index + 1
-        for candidate in lines[title_index + 1 :]:
-            if candidate.paragraph_index < next_paragraph_index:
-                continue
-            if candidate.paragraph_index > next_paragraph_index:
-                break
-            if looks_like_post_title_author_line(candidate.text):
-                author_line = candidate
-                break
+        author_line = collect_following_paragraph_author_line(lines, title_index, keyword_index)
 
-    return keyword_line, title_line, author_line
+    if author_line is None:
+        expanded_title_line, author_line = split_combined_title_author_line(expanded_title_line)
+
+    expanded_title_line, author_line = finalize_title_author_candidates(expanded_title_line, author_line)
+
+    if expanded_title_line is None and structural_title_line is not None:
+        expanded_title_line = structural_title_line
+    if author_line is None and structural_author_line is not None:
+        author_line = structural_author_line
+
+    return keyword_line, expanded_title_line, author_line
 
 
 def build_debug_row(doc, window: ArticleWindowRow, paragraph_total: int) -> EnBlockDebugRow:
@@ -666,11 +1571,13 @@ def print_summary(rows: list[EnBlockDebugRow]) -> None:
 
 
 def main() -> None:
-    input_path = Path(INPUT_WINDOWS_CSV)
+    args = parse_args()
+    run_tag = args.run_tag.strip()
+    input_path = resolve_input_windows_csv(run_tag)
     if not input_path.exists():
         raise FileNotFoundError(f"Файл не найден: {input_path}")
 
-    docx_path = Path(DOCX_PATH)
+    docx_path = Path(args.docx).resolve()
     if not docx_path.exists():
         raise FileNotFoundError(f"Файл не найден: {docx_path}")
 
@@ -680,8 +1587,8 @@ def main() -> None:
     windows = read_article_windows(input_path)
     rows = build_debug_rows(docx_path, windows)
 
-    csv_path = output_dir / OUTPUT_CSV
-    txt_path = output_dir / OUTPUT_TXT
+    csv_path = resolve_output_path(OUTPUT_CSV, run_tag)
+    txt_path = resolve_output_path(OUTPUT_TXT, run_tag)
 
     write_debug_csv(csv_path, rows)
     write_text(txt_path, build_debug_text(rows))
