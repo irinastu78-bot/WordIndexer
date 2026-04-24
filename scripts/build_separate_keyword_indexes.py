@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 from collections import defaultdict
 from pathlib import Path
 import sys
@@ -14,13 +15,29 @@ from wordkeywords.common import clean_keyword, normalize_text, read_csv_rows, so
 
 INPUT_DIR = ROOT_DIR / "output"
 OUTPUT_DIR = ROOT_DIR / "output"
-INPUT_CSV = INPUT_DIR / "fast_keyword_rows_v2.csv"
+INPUT_CSV = "fast_keyword_rows_v2.csv"
 
 RU_CSV = "keyword_index_ru.csv"
 EN_CSV = "keyword_index_en.csv"
 RU_TXT = "keyword_index_ru.txt"
 EN_TXT = "keyword_index_en.txt"
 COMBINED_TXT = "keyword_indexes_for_word.txt"
+
+
+def build_tagged_name(filename: str, run_tag: str) -> str:
+    return f"{run_tag}_{filename}" if run_tag else filename
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Build RU/EN keyword indexes from fast keyword rows CSV."
+    )
+    parser.add_argument(
+        "--run-tag",
+        default="",
+        help="Optional tag prefix for input/output files, e.g. 'test6'.",
+    )
+    return parser.parse_args(argv)
 
 
 def split_joined_keywords(text: str) -> list[str]:
@@ -157,8 +174,10 @@ def print_summary(ru_index: dict[str, set[int]], en_index: dict[str, set[int]]) 
             print(f"- {kw} -> {pages}")
 
 
-def main() -> None:
-    input_path = Path(INPUT_CSV)
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
+
+    input_path = Path(INPUT_DIR) / build_tagged_name(INPUT_CSV, args.run_tag)
     if not input_path.exists():
         raise FileNotFoundError(f"Файл не найден: {input_path}")
 
@@ -168,11 +187,14 @@ def main() -> None:
     rows = read_csv_rows(input_path)
     ru_index, en_index = build_indexes(rows)
 
-    ru_csv_path = output_dir / RU_CSV
-    en_csv_path = output_dir / EN_CSV
-    ru_txt_path = output_dir / RU_TXT
-    en_txt_path = output_dir / EN_TXT
-    combined_txt_path = output_dir / COMBINED_TXT
+    ru_csv_path = output_dir / build_tagged_name(RU_CSV, args.run_tag)
+    en_csv_path = output_dir / build_tagged_name(EN_CSV, args.run_tag)
+    ru_txt_path = output_dir / build_tagged_name(RU_TXT, args.run_tag)
+    en_txt_path = output_dir / build_tagged_name(EN_TXT, args.run_tag)
+    combined_txt_path = output_dir / build_tagged_name(COMBINED_TXT, args.run_tag)
+
+    print(f"INPUT ROWS: {input_path}")
+    print(f"RUN TAG:    {args.run_tag or '(none)'}")
 
     write_index_csv(ru_csv_path, ru_index)
     write_index_csv(en_csv_path, en_index)

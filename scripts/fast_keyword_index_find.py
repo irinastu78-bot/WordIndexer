@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,7 +22,7 @@ except ImportError:
 
 INPUT_DIR = ROOT_DIR / "input"
 OUTPUT_DIR = ROOT_DIR / "output"
-DOCX_PATH = INPUT_DIR / "test1.docx"
+DEFAULT_DOCX_PATH = INPUT_DIR / "test1.docx"
 
 RAW_ROWS_CSV = "fast_keyword_rows_v2.csv"
 INDEX_CSV = "fast_keyword_index_v2.csv"
@@ -36,6 +37,27 @@ class KeywordHit:
     paragraph_text: str
     extracted_text: str
     keywords: list[str]
+
+
+def build_tagged_name(filename: str, run_tag: str) -> str:
+    return f"{run_tag}_{filename}" if run_tag else filename
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Extract keyword paragraphs from a .docx via Word COM and write CSV artifacts."
+    )
+    parser.add_argument(
+        "--docx",
+        default=str(DEFAULT_DOCX_PATH),
+        help=f"Path to the input .docx file. Default: {DEFAULT_DOCX_PATH}",
+    )
+    parser.add_argument(
+        "--run-tag",
+        default="",
+        help="Optional tag prefix for output files, e.g. 'test6'.",
+    )
+    return parser.parse_args(argv)
 
 
 def split_keywords(text: str) -> list[str]:
@@ -244,19 +266,27 @@ def print_summary(hits: list[KeywordHit], index: dict[str, set[int]]) -> None:
             print(f"- {kw} -> {pages}")
 
 
-def main() -> None:
-    docx_path = Path(DOCX_PATH)
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
+
+    docx_path = Path(args.docx)
     if not docx_path.exists():
         raise FileNotFoundError(f"Файл не найден: {docx_path}")
+
+    if docx_path.suffix.lower() != ".docx":
+        raise ValueError(f"Expected a .docx file: {docx_path}")
 
     output_dir = Path(OUTPUT_DIR)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    rows_csv_path = output_dir / build_tagged_name(RAW_ROWS_CSV, args.run_tag)
+    index_csv_path = output_dir / build_tagged_name(INDEX_CSV, args.run_tag)
+
+    print(f"INPUT DOCX: {docx_path}")
+    print(f"RUN TAG:    {args.run_tag or '(none)'}")
+
     hits = extract_keyword_hits_with_word(str(docx_path))
     index = build_index(hits)
-
-    rows_csv_path = output_dir / RAW_ROWS_CSV
-    index_csv_path = output_dir / INDEX_CSV
 
     write_rows_csv(rows_csv_path, hits)
     write_index_csv(index_csv_path, index)
