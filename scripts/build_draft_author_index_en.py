@@ -30,7 +30,8 @@ OUTPUT_INDEX_TXT = "draft_author_index_en.txt"
 OUTPUT_DEBUG_CSV = "draft_author_index_en_debug.csv"
 OUTPUT_DEBUG_TXT = "draft_author_index_en_debug.txt"
 
-LATIN_NAME = r"[A-Z][A-Za-z'-]+"
+APOSTROPHE_TRANSLATION = str.maketrans({"\u2019": "'"})
+LATIN_NAME = r"[A-Z][A-Za-z'\u2019-]+"
 INITIAL_LETTER = r"(?:[A-Z]|[\u0410-\u042f\u0401\u0451])"
 INITIAL_TAIL = r"(?:[a-z]|[\u0430-\u044f\u0451]){0,2}"
 INITIAL = rf"{INITIAL_LETTER}{INITIAL_TAIL}\s*\."
@@ -135,7 +136,7 @@ def split_nonempty_lines(text: str) -> list[str]:
 
 
 def normalize_author_name(name: str) -> str:
-    normalized = normalize_text(name).translate(CYRILLIC_HOMOGLYPH_MAP)
+    normalized = normalize_text(name).translate(CYRILLIC_HOMOGLYPH_MAP).translate(APOSTROPHE_TRANSLATION)
     normalized = re.sub(r"\s+", " ", normalized).strip(" ,;")
     normalized = re.sub(rf"\b({INITIAL_LETTER})\.\s*({INITIAL_LETTER}{INITIAL_TAIL}\.)", r"\1.\2", normalized)
 
@@ -167,7 +168,7 @@ def normalize_author_name(name: str) -> str:
 
 
 def normalize_author_line(text: str) -> str:
-    normalized = normalize_text(text).translate(CYRILLIC_HOMOGLYPH_MAP)
+    normalized = normalize_text(text).translate(CYRILLIC_HOMOGLYPH_MAP).translate(APOSTROPHE_TRANSLATION)
     if not normalized:
         return ""
 
