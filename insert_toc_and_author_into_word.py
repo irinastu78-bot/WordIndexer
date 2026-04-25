@@ -50,12 +50,13 @@ TITLE_SHORT_WORDS = {"и", "в", "с", "на", "по"}
 TOC_INTERNAL_SPACE_AFTER = 0
 TOC_ARTICLE_SPACE_AFTER = 10
 TOC_SPECIAL_SPACE_AFTER = 10
-TOC_AUTHOR_LINE_MAX_CHARS = 84
-TOC_AUTHOR_LAST_LINE_MAX_CHARS = 54
-TOC_AUTHOR_WRAP_TARGET = 60
-TOC_AUTHOR_LAST_WRAP_TARGET = 48
-TOC_AUTHOR_WRAP_HARD_MAX = 62
-TOC_AUTHOR_LAST_HARD_MAX = 50
+TOC_TITLE_WRAP_MAX_CHARS = 72
+TOC_AUTHOR_LINE_MAX_CHARS = 72
+TOC_AUTHOR_LAST_LINE_MAX_CHARS = 72
+TOC_AUTHOR_WRAP_TARGET = 72
+TOC_AUTHOR_LAST_WRAP_TARGET = 72
+TOC_AUTHOR_WRAP_HARD_MAX = 72
+TOC_AUTHOR_LAST_HARD_MAX = 72
 INITIAL_TOKEN_RE = re.compile(r"\b[A-ZА-ЯЁ][a-zа-яё]{0,2}\.")
 
 
@@ -176,6 +177,10 @@ def save_document_with_fallback(document, output_docx_path: Path) -> Path:
 
 def clean_text(value: str) -> str:
     return " ".join((value or "").split()).strip()
+
+
+def normalize_toc_title_text(value: str) -> str:
+    return (value or "").replace("\x1e", "-")
 
 
 def parse_int(value: str) -> int | None:
@@ -306,7 +311,7 @@ def build_toc_structure_overrides(run_tag: str) -> dict[int, dict[str, str]]:
 
             fragments = []
             for fragment in parse_run_fragments(row.get("run_fragments", "")):
-                text = clean_text(str(fragment.get("text", "")))
+                text = clean_text(normalize_toc_title_text(str(fragment.get("text", ""))))
                 font_size = fragment.get("font_size")
                 try:
                     parsed_font_size = float(font_size)
@@ -364,7 +369,7 @@ def load_toc_entries(run_tag: str) -> list[dict[str, object]]:
                 )
 
                 title = clean_text(
-                    override["title"] if override is not None else row.get("ru_title_only", "")
+                    normalize_toc_title_text(override["title"] if override is not None else row.get("ru_title_only", ""))
                 )
                 if len(title) < MIN_TOC_TITLE_LENGTH:
                     continue
@@ -520,6 +525,43 @@ def apply_nbsp_to_title_specs(title_specs: list[dict[str, object]]) -> list[dict
     return specs
 
 
+def estimate_title_visual_width(title_specs: list[dict[str, object]]) -> int:
+    return len("".join(str(spec["text"]) for spec in title_specs))
+
+
+def split_title_specs_into_lines(title_specs: list[dict[str, object]]) -> list[list[dict[str, object]]]:
+    tokens: list[list[dict[str, object]]] = []
+    current_token: list[dict[str, object]] = []
+
+    for spec in title_specs:
+        if spec["text"] == " ":
+            if current_token:
+                tokens.append(current_token)
+                current_token = []
+            continue
+        current_token.append(spec)
+
+    if current_token:
+        tokens.append(current_token)
+
+    lines: list[list[dict[str, object]]] = []
+    current_line: list[dict[str, object]] = []
+    space_spec = {"text": " ", "superscript": False, "subscript": False}
+
+    for token in tokens:
+        candidate_line = [*current_line, dict(space_spec), *token] if current_line else list(token)
+        if current_line and estimate_title_visual_width(candidate_line) > TOC_TITLE_WRAP_MAX_CHARS:
+            lines.append(current_line)
+            current_line = list(token)
+        else:
+            current_line = candidate_line
+
+    if current_line:
+        lines.append(current_line)
+
+    return lines
+
+
 def build_plain_title_specs(text: str) -> list[dict[str, object]]:
     normalized = clean_text(text)
     return [
@@ -587,30 +629,38 @@ def insert_normalized_title_text(
     space_after: int,
 ):
     title_specs = apply_nbsp_to_title_specs(title_specs)
-    plain_text = "".join(str(spec["text"]) for spec in title_specs)
-    if not plain_text:
+    title_lines = split_title_specs_into_lines(title_specs)
+    if not title_lines:
         return None
 
-    insert_at = doc.Content.End - 1
-    paragraph_range = doc.Range(insert_at, insert_at)
-    paragraph_range.InsertAfter(plain_text)
-    doc.Range(insert_at + len(plain_text), insert_at + len(plain_text)).InsertParagraphAfter()
+    inserted_paragraph = None
+    for line_index, line_specs in enumerate(title_lines):
+        is_last_line = line_index == len(title_lines) - 1
+        plain_text = "".join(str(spec["text"]) for spec in line_specs)
+        if not plain_text:
+            continue
 
-    for offset, spec in enumerate(title_specs):
-        char_range = doc.Range(insert_at + offset, insert_at + offset + 1)
-        char_range.Font.Name = "Times New Roman"
-        char_range.Font.Size = 12
-        char_range.Font.Bold = False
-        char_range.Font.Italic = False
-        char_range.Font.Superscript = bool(spec["superscript"])
-        char_range.Font.Subscript = bool(spec["subscript"])
+        insert_at = doc.Content.End - 1
+        paragraph_range = doc.Range(insert_at, insert_at)
+        paragraph_range.InsertAfter(plain_text)
+        doc.Range(insert_at + len(plain_text), insert_at + len(plain_text)).InsertParagraphAfter()
 
-    inserted_paragraph = doc.Range(insert_at, insert_at + len(plain_text)).Paragraphs(1)
-    normalize_inserted_title_paragraph(
-        inserted_paragraph,
-        keep_with_next=keep_with_next,
-        space_after=space_after,
-    )
+        for offset, spec in enumerate(line_specs):
+            char_range = doc.Range(insert_at + offset, insert_at + offset + 1)
+            char_range.Font.Name = "Times New Roman"
+            char_range.Font.Size = 12
+            char_range.Font.Bold = False
+            char_range.Font.Italic = False
+            char_range.Font.Superscript = bool(spec["superscript"])
+            char_range.Font.Subscript = bool(spec["subscript"])
+
+        inserted_paragraph = doc.Range(insert_at, insert_at + len(plain_text)).Paragraphs(1)
+        normalize_inserted_title_paragraph(
+            inserted_paragraph,
+            keep_with_next=keep_with_next if is_last_line else True,
+            space_after=space_after if is_last_line else TOC_INTERNAL_SPACE_AFTER,
+        )
+
     return inserted_paragraph
 
 
@@ -732,49 +782,22 @@ def wrap_author_lines(authors: str) -> list[str]:
     if not names:
         return []
 
-    single_line_width = estimate_author_visual_width(join_author_names(names))
-    if len(names) in {3, 4} and single_line_width <= float(TOC_AUTHOR_LAST_WRAP_TARGET):
-        line_chunks = [names]
-    else:
-        line_chunks: list[list[str]] = []
-        current_line: list[str] = []
+    line_chunks: list[list[str]] = []
+    current_line: list[str] = []
 
-        for name in names:
-            if not current_line:
-                current_line = [name]
-                continue
+    for name in names:
+        candidate_line = [*current_line, name]
+        candidate_width = estimate_author_visual_width(join_author_names(candidate_line))
 
-            candidate_line = [*current_line, name]
-            current_width = estimate_author_visual_width(join_author_names(current_line))
-            candidate_width = estimate_author_visual_width(join_author_names(candidate_line))
-            target_fill_width = float(TOC_AUTHOR_WRAP_TARGET)
-            hard_limit = float(TOC_AUTHOR_WRAP_HARD_MAX)
+        if not current_line or candidate_width <= float(TOC_AUTHOR_WRAP_HARD_MAX):
+            current_line = candidate_line
+            continue
 
-            if candidate_width <= target_fill_width:
-                current_line = candidate_line
-                continue
+        line_chunks.append(current_line)
+        current_line = [name]
 
-            if current_width < target_fill_width and candidate_width <= hard_limit:
-                current_line = candidate_line
-                continue
-
-            line_chunks.append(current_line)
-            current_line = [name]
-
-        if current_line:
-            line_chunks.append(current_line)
-
-        if (
-            len(line_chunks) > 1
-            and len(line_chunks[-1]) == 1
-            and len(line_chunks[-2]) >= 2
-        ):
-            shifted_author = line_chunks[-2][-1]
-            candidate_last_line = [shifted_author, *line_chunks[-1]]
-            candidate_last_width = estimate_author_visual_width(join_author_names(candidate_last_line))
-            if candidate_last_width <= float(TOC_AUTHOR_LAST_HARD_MAX):
-                line_chunks[-2].pop()
-                line_chunks[-1].insert(0, shifted_author)
+    if current_line:
+        line_chunks.append(current_line)
 
     lines: list[str] = []
     for index, chunk in enumerate(line_chunks):
