@@ -163,40 +163,32 @@ python build_separate_keyword_indexes.py --run-tag test7
 Если ошибка: проверить наличие `output\test7_fast_keyword_rows_v2.csv`.
 
 ```powershell
-python insert_keyword_indexes_into_word.py --docx input\test7.docx --run-tag test7
+python build_final_document.py --docx input\test7.docx --run-tag test7
 ```
 
-Что делает: вставляет RU и EN keyword indexes в копию исходного Word-документа.
+Что делает: собирает итоговый Word-документ из исходного `.docx` и готовых tagged artifacts.
 
-Главный output: `output\test7_with_keyword_indexes.docx`.
+Главный output: `output\test7_final_ordered.docx`.
 
-Нормальный summary: создан `.docx`; если основной файл занят, может быть создан fallback с суффиксом `_1`, `_2` и так далее.
+Нормальный summary: вставлены RU/EN author indexes, RU/EN keyword indexes, затем Word пересчитал страницы перед финальным RU TOC, и итоговый `.docx` сохранён.
 
-Если ошибка: закрыть Word-файлы, проверить наличие `output\test7_keyword_index_ru.txt` и `output\test7_keyword_index_en.txt`.
+Если ошибка: закрыть Word-файлы, проверить наличие всех tagged artifacts: RU/EN author index, RU/EN keyword index, RU TOC CSV и RU title structure debug CSV.
 
-```powershell
-python insert_toc_and_author_into_word.py --docx output\test7_with_keyword_indexes.docx --run-tag test7
-```
+Новый порядок блоков в итоговом документе:
 
-Что делает: вставляет RU TOC и RU author index в документ с keyword indexes.
+1. Основной текст статей.
+2. `Авторский указатель`.
+3. `Author Index`.
+4. `Предметный указатель`.
+5. `Keyword Index`.
+6. `Оглавление`.
 
-Главный output: `output\test7_final_with_toc_author.docx`.
+В конце оглавления должны быть строки:
 
-Нормальный summary: TOC entries и author lines вставлены, итоговый файл сохранён.
-
-Если ошибка: закрыть итоговый `.docx`, проверить fallback output и наличие `output\test7_author_index_ru_from_snapshot.txt`.
-
-```powershell
-python insert_en_blocks_into_word.py --docx output\test7_final_with_toc_author.docx --run-tag test7
-```
-
-Что делает: вставляет EN author index в финальный документ.
-
-Главный output: `output\test7_final_with_toc_author_en.docx`.
-
-Нормальный summary: EN author index inserted, итоговый `.docx` сохранён.
-
-Если ошибка: проверить наличие `output\test7_draft_author_index_en.txt` и закрыть открытые Word-файлы.
+- `Авторский указатель`;
+- `Author Index`;
+- `Предметный указатель`;
+- `Keyword Index`.
 
 ## Контрольные признаки успешного прогона
 
@@ -207,8 +199,10 @@ python insert_en_blocks_into_word.py --docx output\test7_final_with_toc_author.d
 - `EN NOT FOUND: 0` или `NOT FOUND: 0` в EN author step.
 - `RU NOT FOUND: 0` в RU author diagnostics.
 - RU keyword hits и EN keyword hits равны числу статей или объяснимо близки к нему.
-- Итоговый файл создан: `output\test7_final_with_toc_author_en.docx`.
-- В итоговом файле есть RU keyword index, EN keyword index, RU TOC, RU author index и EN author index.
+- Итоговый файл создан: `output\test7_final_ordered.docx`.
+- В итоговом файле есть RU author index, EN author index, RU keyword index, EN keyword index и RU TOC.
+- Оглавление находится последним блоком документа.
+- В конце оглавления есть строки `Авторский указатель`, `Author Index`, `Предметный указатель`, `Keyword Index` с реальными страницами.
 
 ## Типовые ошибки
 
@@ -219,6 +213,8 @@ python insert_en_blocks_into_word.py --docx output\test7_final_with_toc_author.d
 - Если input `.docx` имеет размер `0`, файл скопирован неправильно.
 - Если скрипт ищет не те tagged artifacts, проверить единый `--run-tag` во всех командах.
 - Если число статей неожиданно меньше ожидаемого, начать с `test7_doc_paragraph_snapshot.csv` и RU/EN debug artifacts.
+- Если появилась пустая страница перед авторским указателем, проверить логику первого page break в `build_final_document.py`.
+- Если heading не найден при расчёте страниц указателей, смотреть diagnostic output `build_final_document.py`.
 
 ## Что не коммитить
 
