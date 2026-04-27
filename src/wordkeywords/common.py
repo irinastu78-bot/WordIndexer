@@ -6,6 +6,11 @@ import unicodedata
 from pathlib import Path
 from typing import Iterable
 
+COMPACT_LOCANT_KEYWORD_RE = re.compile(
+    r"^(?P<head>\d+)\((?P<inner>\d+)(?P<inside>[A-Za-z\u0400-\u04FF][^)]*)\)"
+    r"(?P<locants>\d+(?:,\d+)+)(?P<tail>[A-Za-z\u0400-\u04FF].*)$"
+)
+
 
 def normalize_text(text: str) -> str:
     if not text:
@@ -13,7 +18,7 @@ def normalize_text(text: str) -> str:
     text = text.replace("\ufeff", "")
     text = text.replace("\r", "\n").replace("\x0b", "\n").replace("\x0c", "\n")
     text = text.replace("\xa0", " ")
-    text = text.replace("\x1e", "")
+    text = text.replace("\x1e", "-")
     text = text.replace("\x00", "")
     text = unicodedata.normalize("NFKC", text)
     text = re.sub(r"[ \t]+", " ", text)
@@ -33,8 +38,21 @@ def clean_keyword(keyword: str) -> str:
     keyword = normalize_text(keyword)
     keyword = keyword.strip(" ,;.:")
     keyword = re.sub(r"\s*-\s*", "-", keyword)
+    keyword = restore_compact_locant_hyphens(keyword)
     keyword = normalize_text(keyword)
     return keyword.strip(" ,;.:")
+
+
+def restore_compact_locant_hyphens(keyword: str) -> str:
+    match = COMPACT_LOCANT_KEYWORD_RE.match(keyword)
+    if match is None:
+        return keyword
+
+    return (
+        f"{match.group('head')}-"
+        f"({match.group('inner')}-{match.group('inside')})-"
+        f"{match.group('locants')}-{match.group('tail')}"
+    )
 
 
 def sort_keywords(items: Iterable[str]) -> list[str]:

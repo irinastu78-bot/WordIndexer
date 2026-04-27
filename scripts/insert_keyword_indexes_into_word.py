@@ -27,6 +27,9 @@ RU_INDEX_TXT = "keyword_index_ru.txt"
 EN_INDEX_TXT = "keyword_index_en.txt"
 RU_INDEX_CSV = "keyword_index_ru.csv"
 EN_INDEX_CSV = "keyword_index_en.csv"
+FORMULA_OPEN_TO_CLOSE = {"(": ")", "[": "]"}
+FORMULA_CLOSE_TO_OPEN = {")": "(", "]": "["}
+FORMULA_TOKEN_CHARS = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789()[]")
 
 
 def build_tagged_name(filename: str, run_tag: str) -> str:
@@ -176,13 +179,113 @@ def insert_plain_paragraph(doc, text: str, font_name: str = "Times New Roman", f
     )
 
 
+def find_formula_token_bounds(text: str, digit_index: int) -> tuple[int, int]:
+    start = digit_index
+    while start > 0 and text[start - 1] in FORMULA_TOKEN_CHARS:
+        start -= 1
+
+    end = digit_index + 1
+    while end < len(text) and text[end] in FORMULA_TOKEN_CHARS:
+        end += 1
+
+    return start, end
+
+
+def parse_formula_group(token: str, start: int = 0, stop_char: str | None = None) -> tuple[bool, int]:
+    index = start
+    while index < len(token):
+        char = token[index]
+        if stop_char is not None and char == stop_char:
+            return index > start, index + 1
+
+        if char in FORMULA_OPEN_TO_CLOSE:
+            ok, index = parse_formula_group(token, index + 1, FORMULA_OPEN_TO_CLOSE[char])
+            if not ok:
+                return False, index
+            while index < len(token) and token[index].isdigit():
+                index += 1
+            continue
+
+        if char in FORMULA_CLOSE_TO_OPEN:
+            return False, index
+
+        if char.isupper():
+            index += 1
+            if index < len(token) and token[index].islower():
+                index += 1
+            while index < len(token) and token[index].isdigit():
+                index += 1
+            continue
+
+        return False, index
+
+    return stop_char is None and index > start, index
+
+
+def looks_like_formula_token(token: str) -> bool:
+    if not token or not any(char.isdigit() for char in token) or not any(char.isupper() for char in token):
+        return False
+
+    ok, index = parse_formula_group(token)
+    return ok and index == len(token)
+
+
+def should_subscript_keyword_digit(text: str, digit_index: int) -> bool:
+    if not text[digit_index].isdigit():
+        return False
+
+    if digit_index == 0 or text[digit_index - 1] not in FORMULA_TOKEN_CHARS:
+        return False
+
+    start, end = find_formula_token_bounds(text, digit_index)
+    return looks_like_formula_token(text[start:end])
+
+
+def build_keyword_entry_text_and_subscripts(keyword: str, page_text: str) -> tuple[str, set[int]]:
+    full_text = f"{keyword} {page_text}" if page_text else keyword
+    subscript_offsets = {
+        index
+        for index, char in enumerate(keyword)
+        if char.isdigit() and should_subscript_keyword_digit(keyword, index)
+    }
+    return full_text, subscript_offsets
+
+
+def insert_keyword_entry_paragraph(
+    doc,
+    keyword: str,
+    page_text: str,
+    font_name: str = "Times New Roman",
+    font_size: int = 12,
+) -> None:
+    text, subscript_offsets = build_keyword_entry_text_and_subscripts(keyword, page_text)
+
+    insert_at = doc.Content.End - 1
+    paragraph_range = doc.Range(insert_at, insert_at)
+    paragraph_range.InsertAfter(text)
+    paragraph_range.InsertParagraphAfter()
+
+    formatted_range = doc.Range(insert_at, insert_at + len(text))
+    formatted_range.Font.Name = font_name
+    formatted_range.Font.Size = font_size
+    formatted_range.Font.Bold = False
+    formatted_range.Font.Italic = False
+    formatted_range.Font.Superscript = False
+    formatted_range.Font.Subscript = False
+
+    for offset in sorted(subscript_offsets):
+        char_range = doc.Range(insert_at + offset, insert_at + offset + 1)
+        char_range.Font.Subscript = True
+
+
 def insert_index_block(doc, heading: str, index: dict[str, list[int]]) -> None:
     insert_heading(doc, heading, level=1)
 
     for keyword in sort_keywords(index.keys()):
         pages_sorted = sorted(index[keyword])
-        line = f"{keyword} {', '.join(str(p) for p in pages_sorted)}"
-        insert_plain_paragraph(doc, line)
+        page_text = ", ".join(str(p) for p in pages_sorted)
+        insert_keyword_entry_paragraph(doc, keyword, page_text)
+
 
 
 def main(argv: list[str] | None = None) -> None:
