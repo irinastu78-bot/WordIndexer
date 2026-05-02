@@ -53,7 +53,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--run-tag",
         default="",
-        help="Optional tag prefix for keyword index artifacts and output file, e.g. 'test6'.",
+        help="Optional tag prefix for keyword index artifacts and output file, e.g. 'run1'.",
     )
     return parser.parse_args(argv)
 

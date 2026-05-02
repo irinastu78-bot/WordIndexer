@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import argparse
+import csv
 from dataclasses import dataclass
 from pathlib import Path
 import sys
@@ -9,11 +11,11 @@ SRC_DIR = ROOT_DIR / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from wordkeywords.common import normalize_text, read_csv_rows, write_csv, write_text
+from wordkeywords.common import normalize_text, write_csv, write_text
 
 
 OUTPUT_DIR = ROOT_DIR / "output"
-INPUT_DEBUG_CSV = OUTPUT_DIR / "author_title_paragraph_ru_debug.csv"
+DEFAULT_INPUT_DEBUG_CSV = OUTPUT_DIR / "author_title_paragraph_ru_debug.csv"
 
 OUTPUT_CSV = "author_windows_en_debug.csv"
 OUTPUT_TXT = "author_windows_en_debug.txt"
@@ -29,6 +31,42 @@ class ArticleWindowRow:
     status: str
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Build EN author windows debug CSV/TXT from the RU title paragraph layer."
+    )
+    parser.add_argument(
+        "--run-tag",
+        dest="run_tag",
+        default="",
+        help="Optional prefix for tagged input/output artifact names.",
+    )
+    return parser.parse_args()
+
+
+def resolve_output_path(base_name: str, run_tag: str) -> Path:
+    clean_run_tag = run_tag.strip()
+    file_name = f"{clean_run_tag}_{base_name}" if clean_run_tag else base_name
+    return OUTPUT_DIR / file_name
+
+
+def resolve_input_debug_csv(run_tag: str) -> Path:
+    clean_run_tag = run_tag.strip()
+    if clean_run_tag:
+        tagged_snapshot_path = resolve_output_path(
+            "author_title_paragraph_ru_debug_from_snapshot.csv",
+            clean_run_tag,
+        )
+        if tagged_snapshot_path.exists():
+            return tagged_snapshot_path
+
+        tagged_legacy_path = resolve_output_path("author_title_paragraph_ru_debug.csv", clean_run_tag)
+        if tagged_legacy_path.exists():
+            return tagged_legacy_path
+
+    return DEFAULT_INPUT_DEBUG_CSV
+
+
 def parse_int(value: str) -> int | None:
     normalized = normalize_text(value)
     if normalized.isdigit():
@@ -36,8 +74,17 @@ def parse_int(value: str) -> int | None:
     return None
 
 
+def read_ru_debug_rows(path: Path) -> list[dict[str, str]]:
+    first_line = path.read_text(encoding="utf-8-sig").splitlines()[0]
+    delimiter = "," if "," in first_line and ";" not in first_line else ";"
+
+    with path.open("r", encoding="utf-8-sig", newline="") as file_obj:
+        reader = csv.DictReader(file_obj, delimiter=delimiter)
+        return list(reader)
+
+
 def build_rows_from_ru_debug_csv(path: Path) -> list[ArticleWindowRow]:
-    source_rows = read_csv_rows(path)
+    source_rows = read_ru_debug_rows(path)
     parsed_rows: list[ArticleWindowRow] = []
 
     for item in source_rows:
@@ -130,7 +177,9 @@ def print_summary(rows: list[ArticleWindowRow]) -> None:
 
 
 def main() -> None:
-    input_path = Path(INPUT_DEBUG_CSV)
+    args = parse_args()
+    run_tag = args.run_tag.strip()
+    input_path = resolve_input_debug_csv(run_tag)
     if not input_path.exists():
         raise FileNotFoundError(f"Файл не найден: {input_path}")
 
@@ -139,8 +188,8 @@ def main() -> None:
 
     rows = build_rows_from_ru_debug_csv(input_path)
 
-    csv_path = output_dir / OUTPUT_CSV
-    txt_path = output_dir / OUTPUT_TXT
+    csv_path = resolve_output_path(OUTPUT_CSV, run_tag)
+    txt_path = resolve_output_path(OUTPUT_TXT, run_tag)
 
     write_debug_csv(csv_path, rows)
     write_text(txt_path, build_debug_text(rows))

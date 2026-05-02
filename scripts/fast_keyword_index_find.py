@@ -55,7 +55,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--run-tag",
         default="",
-        help="Optional tag prefix for output files, e.g. 'test6'.",
+        help="Optional tag prefix for output files, e.g. 'run1'.",
     )
     return parser.parse_args(argv)
 

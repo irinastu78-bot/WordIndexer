@@ -1,48 +1,90 @@
-# WordKeywords
+# WordKeywords / WordIndexer
 
-Минимально актуальная структура проекта:
+## Назначение проекта
 
-- `fast_keyword_index_find.py` - совместимый корневой запуск поиска keyword-блоков через Word COM `Find`
-- `build_separate_keyword_indexes.py` - совместимый корневой запуск сборки RU/EN указателей
-- `insert_keyword_indexes_into_word.py` - совместимый корневой запуск вставки объединенного указателя в Word
-- `scripts/` - актуальная реализация рабочих скриптов
-- `src/wordkeywords/common.py` - общие утилиты нормализации, CSV и базовой обработки keyword-строк
-- `archive/` - старые промежуточные и экспериментальные версии, не входящие в текущий рабочий пайплайн
+WordKeywords / WordIndexer — pipeline для Word-документа со статьями. Он извлекает RU/EN keywords и RU/EN authors, строит RU/EN author indexes, RU/EN keyword indexes, RU/EN TOC (оглавления) и собирает итоговый ordered `.docx`.
 
-Актуальный пайплайн:
+## Входной и итоговый документы
 
-1. `python fast_keyword_index_find.py`
-2. `python build_separate_keyword_indexes.py`
-3. `python insert_keyword_indexes_into_word.py`
+Pipeline параметризован через `--docx` и `--run-tag`.
 
-Текущее состояние `test4`:
+Пример:
 
-- входной файл заказчика: `input/test4.docx`
-- snapshot pipeline для `test4` собран
-- RU author draft from snapshot собран
-- RU TOC draft собран
-- keyword pipeline собран
-- финальный документ собирается
-- RU TOC author wrapping/layout доведён до приемлемого состояния
-- в финальной сборке восстановлены предметные указатели
+- Input: `input/test7.docx`
+- Run tag: `test7`
+- Output: `output/test7_final_ordered.docx`
 
-Порядок итоговых артефактов для `test4`:
+Для другого файла используйте свой input `.docx` и тот же `run-tag` во всех командах pipeline.
 
-1. `output/test4_with_keyword_indexes.docx`
-2. `output/test4_final_with_toc_author.docx`
+## Важное ограничение
 
-Примечание по финальной сборке:
+Исходный основной текст заказчика нельзя менять. Скрипты могут читать input `.docx`, но финальный builder должен сначала сделать byte-copy в `output/`, открыть только output-копию и добавить новые разделы только после последней статьи.
 
-- финальная вставка TOC/author в `insert_toc_and_author_into_word.py` использует `output/<run-tag>_with_keyword_indexes.docx` как source document, если такой файл уже существует для текущего `run-tag`
-- если такого tagged файла нет, используется явно переданный `--docx`
+## Итоговая структура output docx
 
-Следующий приоритет:
+1. Основной текст статей
+2. Авторский указатель
+3. Author Index
+4. Предметный указатель
+5. Keyword Index
+6. Оглавление
+7. Table of Contents
 
-1. `EN author index`
+## Полный pipeline для нового файла
 
-Архивные файлы сохранены без удаления:
+Пример для `input/test7.docx` и `--run-tag test7`:
 
-- `archive/build_keyword_index.py` - старая версия извлечения через перебор абзацев
-- `archive/export_keywords_csv.py` - ранний экспорт через `python-docx`
-- `archive/reconcile_with_toc.py` - промежуточный скрипт сверки с оглавлением
-- `archive/tt.py` - отладочный/диагностический скрипт
+```powershell
+python dump_doc_paragraph_snapshot.py --docx input/test7.docx --run-tag test7
+python build_author_title_paragraph_ru_from_snapshot.py --run-tag test7
+python scripts/enrich_ru_title_paragraph_structure.py --docx input/test7.docx --run-tag test7
+python build_draft_author_index_ru_from_snapshot.py --run-tag test7
+python build_author_index_ru_text_from_snapshot.py --run-tag test7
+
+python debug_toc_ru_from_word.py --docx input/test7.docx --run-tag test7
+python build_toc_ru_draft_text.py --run-tag test7
+
+python scripts/debug_author_windows_en.py --run-tag test7
+python -m scripts.debug_en_title_author_pairs --docx input/test7.docx --run-tag test7
+python -m scripts.build_draft_author_index_en --docx input/test7.docx --run-tag test7
+python -m scripts.build_draft_toc_en --docx input/test7.docx --run-tag test7
+
+python -m scripts.fast_keyword_index_find --docx input/test7.docx --run-tag test7
+python -m scripts.build_separate_keyword_indexes --run-tag test7
+
+python build_final_document.py --docx input/test7.docx --run-tag test7
+```
+
+## Важные output artifacts
+
+- `output/<run-tag>_doc_paragraph_snapshot.csv`
+- `output/<run-tag>_author_index_ru_from_snapshot.txt`
+- `output/<run-tag>_author_index_ru_from_snapshot.csv`
+- `output/<run-tag>_draft_author_index_en.txt`
+- `output/<run-tag>_draft_author_index_en.csv`
+- `output/<run-tag>_keyword_index_ru.txt`
+- `output/<run-tag>_keyword_index_ru.csv`
+- `output/<run-tag>_keyword_index_en.txt`
+- `output/<run-tag>_keyword_index_en.csv`
+- `output/<run-tag>_draft_toc_ru.csv`
+- `output/<run-tag>_draft_toc_ru.txt`
+- `output/<run-tag>_draft_toc_en.csv`
+- `output/<run-tag>_draft_toc_en.txt`
+- `output/<run-tag>_final_ordered.docx`
+
+## Проверки после финальной сборки
+
+- Основной текст не изменён.
+- Добавленные разделы находятся только после статей.
+- Нумерация страниц appendices сквозная.
+- RU/EN TOC в одну колонку.
+- Keyword formulas сохраняют hyphen и subscript.
+- EN TOC контрольные pages: `117`, `180`, `196`, `223`, `232`, `312`, `419`.
+- Перед коммитом обязательно открыть output docx вручную и проверить основной текст, нумерацию appendices и оглавления.
+
+## Известные особенности
+
+- Word COM может падать с ошибкой `Вызов был отклонен`, если Word занят; закрыть Word/убить `WINWORD` и повторить.
+- `pywin32` `gen_py` cache может ломаться; очистить через `gencache.GetGeneratePath()`.
+- Некоторые scripts из папки `scripts/` лучше запускать через `python -m scripts.<name>`, чтобы импорты работали корректно.
+- Полная сборка может занимать несколько часов.

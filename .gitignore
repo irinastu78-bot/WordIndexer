@@ -28,3 +28,4 @@ input/*.doc
 
 # Optional: generated CSV/TXT if they may appear outside output
 *.tmp
+.agents/

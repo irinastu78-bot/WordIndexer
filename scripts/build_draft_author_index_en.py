@@ -35,6 +35,7 @@ LATIN_NAME = r"[A-Z][A-Za-z'\u2019-]+"
 INITIAL_LETTER = r"(?:[A-Z]|[\u0410-\u042f\u0401\u0451])"
 INITIAL_TAIL = r"(?:[a-z]|[\u0430-\u044f\u0451]){0,2}"
 INITIAL = rf"{INITIAL_LETTER}{INITIAL_TAIL}\s*\."
+FINAL_INITIAL_WITHOUT_DOT = rf"{INITIAL_LETTER}{INITIAL_TAIL}"
 DOUBLE_INITIALS = rf"{INITIAL}\s*{INITIAL}"
 NAME_END = r"(?=[\W\d]|$)"
 
@@ -173,12 +174,18 @@ def normalize_author_line(text: str) -> str:
         return ""
 
     normalized = normalized.replace("*", "")
+    normalized = re.sub(r"(?<=\d)(?=[A-Z\u0410-\u042f\u0401])", " ", normalized)
 
     for pattern in AFFILIATION_STRIP_PATTERNS:
         normalized = pattern.sub(r"\1", normalized)
 
     normalized = re.sub(r"(?<=[A-Za-z\u0410-\u042f\u0401\u0451\u0430-\u044f])(?=\d)", " ", normalized)
     normalized = re.sub(r"\b\d+(?:\s*,\s*\d+)*\b", "", normalized)
+    normalized = re.sub(
+        rf"\b({LATIN_NAME})\s+({INITIAL})\s*({FINAL_INITIAL_WITHOUT_DOT})(?=\s*[,;]|$)",
+        r"\1 \2\3.",
+        normalized,
+    )
     normalized = re.sub(r"\s+,", ",", normalized)
     normalized = re.sub(r",\s*,+", ", ", normalized)
     normalized = re.sub(r"\s*;\s*", "; ", normalized)

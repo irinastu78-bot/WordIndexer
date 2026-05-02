@@ -46,7 +46,26 @@ SPECIAL_TOC_TITLES = [
     "Статьи по материалам пленарных и стендовых докладов II Лунинских чтений 11 февраля 2026 г.",
 ]
 SPECIAL_TOC_FALLBACK_PAGES = [3, 4, 9]
-TITLE_SHORT_WORDS = {"и", "в", "с", "на", "по"}
+TITLE_SHORT_WORDS = {
+    "и",
+    "в",
+    "с",
+    "на",
+    "по",
+    "a",
+    "an",
+    "and",
+    "as",
+    "at",
+    "by",
+    "for",
+    "in",
+    "of",
+    "on",
+    "or",
+    "the",
+    "to",
+}
 TOC_INTERNAL_SPACE_AFTER = 0
 TOC_ARTICLE_SPACE_AFTER = 10
 TOC_SPECIAL_SPACE_AFTER = 10
