@@ -88,3 +88,32 @@ python build_final_document.py --docx input/test7.docx --run-tag test7
 - `pywin32` `gen_py` cache может ломаться; очистить через `gencache.GetGeneratePath()`.
 - Некоторые scripts из папки `scripts/` лучше запускать через `python -m scripts.<name>`, чтобы импорты работали корректно.
 - Полная сборка может занимать несколько часов.
+
+
+## Screenshots <br>
+<a href="images/article_example.png" target="_blank">
+  <img src="images/article_example.png" alt="Пример исходного текста статьи" title="Пример исходного текста статьи" height="100">
+</a>
+<a href="images/author_index_ru.png">
+  <img src="images/author_index_ru.png" alt="Авторский указатель" title="Авторский указатель" height="100">
+</a>
+<a href="images/author_index_en.png" target="_blank">
+  <img src="images/author_index_en.png" alt="Author Index" title="Author Index" height="100">
+</a>
+<a href="images/kw_index_ru.png" target="_blank">
+  <img src="images/kw_index_ru.png" alt="Предметный указатель" title="Предметный указатель" height="100">
+</a><br>
+
+<a href="images/kw_index_en.png" target="_blank">
+  <img src="images/kw_index_en.png" alt="Keyword Index" title="Keyword Index" height="100">
+</a>
+<a href="images/toc_ru.png" target="_blank">
+  <img src="images/toc_ru.png" alt="Оглавление на русском" title="Оглавление на русском" height="100">
+</a>
+<a href="images/toc_en.png" target="_blank">
+  <img src="images/toc_en.png" alt="Оглавление на английском" title="Оглавление на английском" height="100">
+</a>
+<a href="images/toc_ru_last.png" target="_blank">
+  <img src="images/toc_ru_last.png" alt="Последняя страница оглавления" title="Последняя страница оглавления" height="100">
+</a>
+
